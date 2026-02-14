@@ -335,8 +335,59 @@ export default function GrizzlyMapper() {
   const [sidebarState, setSidebarState] = useState({ isOpen: false, mode: "source", rowIdx: null, field: null });
   const [templateLoaded, setTemplateLoaded] = useState(false);
   const [templateInfo, setTemplateInfo] = useState("");
+  const [originalModules, setOriginalModules] = useState(null); // Track original state for diff
 
   const mappings = modules[activeModule]?.mappings || [];
+
+  // Calculate changes for dashboard
+  const calculateChanges = () => {
+    if (!originalModules) return { added: [], removed: [], modified: [], unchanged: [] };
+    
+    const changes = { added: [], removed: [], modified: [], unchanged: [] };
+    const currentFlat = {};
+    const originalFlat = {};
+    
+    // Flatten current modules
+    modules.forEach(mod => {
+      mod.mappings.forEach(m => {
+        const key = `${mod.name}:${m.target}`;
+        currentFlat[key] = { module: mod.name, ...m };
+      });
+    });
+    
+    // Flatten original modules
+    originalModules.forEach(mod => {
+      mod.mappings.forEach(m => {
+        const key = `${mod.name}:${m.target}`;
+        originalFlat[key] = { module: mod.name, ...m };
+      });
+    });
+    
+    // Find added and modified
+    Object.keys(currentFlat).forEach(key => {
+      if (!originalFlat[key]) {
+        changes.added.push(currentFlat[key]);
+      } else {
+        const curr = currentFlat[key];
+        const orig = originalFlat[key];
+        if (curr.source !== orig.source || curr.transformation !== orig.transformation || 
+            curr.transform !== orig.transform || curr.isModule !== orig.isModule) {
+          changes.modified.push({ current: curr, original: orig });
+        } else {
+          changes.unchanged.push(curr);
+        }
+      }
+    });
+    
+    // Find removed
+    Object.keys(originalFlat).forEach(key => {
+      if (!currentFlat[key]) {
+        changes.removed.push(originalFlat[key]);
+      }
+    });
+    
+    return changes;
+  };
 
   const handleFile = (type, file) => {
     const reader = new FileReader();
@@ -355,6 +406,7 @@ export default function GrizzlyMapper() {
           const parsed = parseTemplate(content);
           if (parsed.modules) {
             setModules(parsed.modules);
+            setOriginalModules(JSON.parse(JSON.stringify(parsed.modules))); // Deep copy
             setActiveModule(0);
             setTemplateLoaded(true);
             setTemplateInfo(`${parsed.totalMappings} mappings, ${parsed.modules.length} modules`);
@@ -639,7 +691,71 @@ export default function GrizzlyMapper() {
         )}
 
         {step === 3 && (
-          <div className="max-w-4xl mx-auto space-y-4 mt-10">
+          <div className="max-w-6xl mx-auto space-y-6 mt-6">
+            
+            {/* Change Dashboard */}
+            {originalModules && (() => {
+              const changes = calculateChanges();
+              const hasChanges = changes.added.length > 0 || changes.removed.length > 0 || changes.modified.length > 0;
+              
+              return hasChanges && (
+                <div className="grid grid-cols-3 gap-4 mb-6">
+                  {/* Added */}
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Plus size={16} className="text-emerald-600"/>
+                      <h3 className="font-bold text-sm text-emerald-800">Added ({changes.added.length})</h3>
+                    </div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {changes.added.map((m, idx) => (
+                        <div key={idx} className="text-xs font-mono text-emerald-700 bg-white rounded px-2 py-1">
+                          {m.module !== "main" && <span className="text-emerald-500">[{m.module}]</span>} {m.target}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Modified */}
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <ArrowRight size={16} className="text-amber-600"/>
+                      <h3 className="font-bold text-sm text-amber-800">Modified ({changes.modified.length})</h3>
+                    </div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {changes.modified.map((m, idx) => (
+                        <div key={idx} className="text-xs bg-white rounded px-2 py-1">
+                          <div className="font-mono text-amber-700">
+                            {m.current.module !== "main" && <span className="text-amber-500">[{m.current.module}]</span>} {m.current.target}
+                          </div>
+                          <div className="text-[10px] text-amber-600 flex items-center gap-1 mt-0.5">
+                            <span className="line-through">{m.original.source}</span>
+                            <ArrowRight size={10}/>
+                            <span>{m.current.source}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Removed */}
+                  <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <X size={16} className="text-rose-600"/>
+                      <h3 className="font-bold text-sm text-rose-800">Removed ({changes.removed.length})</h3>
+                    </div>
+                    <div className="space-y-1 max-h-32 overflow-y-auto">
+                      {changes.removed.map((m, idx) => (
+                        <div key={idx} className="text-xs font-mono text-rose-700 bg-white rounded px-2 py-1 line-through">
+                          {m.module !== "main" && <span className="text-rose-500">[{m.module}]</span>} {m.target}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Code Preview */}
             <div className="bg-slate-900 rounded-xl p-6 relative shadow-2xl">
               <div className="absolute top-4 right-4 flex gap-2">
                 <button onClick={() => navigator.clipboard.writeText(generateCode())} className="text-white/50 hover:text-white flex items-center gap-1 text-xs bg-slate-800 px-3 py-1.5 rounded"><Copy size={12}/> Copy</button>
