@@ -1,0 +1,24 @@
+{
+  "customerId": "string",
+  "personalInfo": {
+    "firstName": "string",
+    "lastName": "string",
+    "dateOfBirth": "date",
+    "email": "string",
+    "phoneNumber": "string"
+  },
+  "accounts": [
+    {
+      "accountNumber": "string",
+      "accountType": "string",
+      "balance": "number",
+      "currency": "string",
+      "status": "string"
+    }
+  ],
+  "preferences": {
+    "emailNotifications": "boolean",
+    "smsNotifications": "boolean",
+    "preferredLanguage": "string"
+  }
+}

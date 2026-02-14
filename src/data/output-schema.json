@@ -1,0 +1,34 @@
+{
+  "clientReference": "string",
+  "profile": {
+    "fullName": "string",
+    "contact": {
+      "primaryEmail": "string",
+      "mobile": "string"
+    },
+    "dob": "date"
+  },
+  "financialAccounts": [
+    {
+      "accountId": "string",
+      "type": "string",
+      "currentBalance": {
+        "amount": "number",
+        "currencyCode": "string"
+      },
+      "isActive": "boolean"
+    }
+  ],
+  "totalBalance": {
+    "amount": "number",
+    "currency": "string"
+  },
+  "notifications": {
+    "channels": "array",
+    "locale": "string"
+  },
+  "metadata": {
+    "transformedAt": "datetime",
+    "accountCount": "number"
+  }
+}
