@@ -202,6 +202,89 @@ const ConditionalEditor = ({ mapping, onChange, onOpenSidebar }) => (
   </div>
 );
 
+// NEW SECTION 4 & DATETIME PLUGINS
+const ForLoopEditor = ({ mapping, onChange, onOpenSidebar }) => (
+  <div className="space-y-2">
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Loop Variable</label>
+    <input value={mapping.loopVar || ""} onChange={(e) => onChange({ loopVar: e.target.value })} placeholder="item" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Iterate Over</label>
+    <input value={mapping.iterable || ""} onChange={(e) => onChange({ iterable: e.target.value })} onClick={() => onOpenSidebar("source")} placeholder="INPUT.items or range(10)" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5 cursor-pointer hover:bg-blue-50"/>
+    <div className="text-[10px] text-slate-500">Examples: INPUT.transactions, range(5), range(0,10,2)</div>
+  </div>
+);
+
+const IfBlockEditor = ({ mapping, onChange }) => (
+  <div className="space-y-2">
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Type</label>
+    <select value={mapping.ifType || "if"} onChange={(e) => onChange({ ifType: e.target.value })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5">
+      <option value="if">if</option>
+      <option value="elif">elif</option>
+      <option value="else">else</option>
+    </select>
+    {mapping.ifType !== "else" && (
+      <>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Condition</label>
+        <input value={mapping.condition || ""} onChange={(e) => onChange({ condition: e.target.value })} placeholder="INPUT.balance >= 100000" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+      </>
+    )}
+  </div>
+);
+
+const DateTimeParseEditor = ({ mapping, onChange, onOpenSidebar }) => (
+  <div className="space-y-2">
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Variable Name</label>
+    <input value={mapping.varName || ""} onChange={(e) => onChange({ varName: e.target.value })} placeholder="birthDate" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Source Field</label>
+    <input value={mapping.source || ""} onChange={(e) => onChange({ source: e.target.value })} onClick={() => onOpenSidebar("source")} placeholder="INPUT.dateOfBirth" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5 cursor-pointer hover:bg-blue-50"/>
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Format</label>
+    <select value={mapping.format || "yyyyMMdd"} onChange={(e) => onChange({ format: e.target.value })} className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5">
+      <option value="yyyyMMdd">yyyyMMdd (20240222)</option>
+      <option value="yyyy-MM-dd">yyyy-MM-dd (2024-02-22)</option>
+      <option value="dd/MM/yyyy">dd/MM/yyyy (22/02/2024)</option>
+      <option value="MM/dd/yyyy">MM/dd/yyyy (02/22/2024)</option>
+    </select>
+  </div>
+);
+
+const DateTimeFormatEditor = ({ mapping, onChange }) => (
+  <div className="space-y-2">
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">DateTime Variable</label>
+    <input value={mapping.dateVar || ""} onChange={(e) => onChange({ dateVar: e.target.value })} placeholder="birthDate or now()" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Output Format</label>
+    <select value={mapping.format || "yyyy-MM-dd"} onChange={(e) => onChange({ format: e.target.value })} className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5">
+      <option value="yyyy-MM-dd">yyyy-MM-dd (2024-02-22)</option>
+      <option value="dd/MM/yyyy">dd/MM/yyyy (22/02/2024)</option>
+      <option value="yyyyMMdd">yyyyMMdd (20240222)</option>
+      <option value="MM/dd/yyyy">MM/dd/yyyy (02/22/2024)</option>
+    </select>
+  </div>
+);
+
+const DateTimeAddEditor = ({ mapping, onChange }) => (
+  <div className="space-y-2">
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Variable Name</label>
+    <input value={mapping.varName || ""} onChange={(e) => onChange({ varName: e.target.value })} placeholder="futureDate" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+    <div className="grid grid-cols-2 gap-2">
+      <div>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block">Operation</label>
+        <select value={mapping.operation || "addDays"} onChange={(e) => onChange({ operation: e.target.value })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5">
+          <option value="addDays">addDays</option>
+          <option value="addMonths">addMonths</option>
+          <option value="addYears">addYears</option>
+          <option value="addHours">addHours</option>
+          <option value="addMinutes">addMinutes</option>
+        </select>
+      </div>
+      <div>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block">Amount</label>
+        <input value={mapping.amount || ""} onChange={(e) => onChange({ amount: e.target.value })} placeholder="5 or -3" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+      </div>
+    </div>
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Source DateTime</label>
+    <input value={mapping.source || ""} onChange={(e) => onChange({ source: e.target.value })} placeholder="birthDate or now()" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+  </div>
+);
+
 const TRANSFORMATION_PLUGINS = {
   direct: { 
     id: "direct", 
@@ -232,6 +315,52 @@ const TRANSFORMATION_PLUGINS = {
       const elseCode = els.includes('.') ? `INPUT.${els}` : `"${els}"`; 
       return `${thenCode} if INPUT.${field} ${op} "${val}" else ${elseCode}`;
     } 
+  },
+  for_loop: {
+    id: "for_loop",
+    label: "For Loop",
+    Editor: ForLoopEditor,
+    generate: (m) => `for ${m.loopVar || 'item'} in ${m.iterable || 'items'}:`
+  },
+  if_block: {
+    id: "if_block",
+    label: "If/Elif/Else",
+    Editor: IfBlockEditor,
+    generate: (m) => {
+      if (m.ifType === "else") return "else:";
+      if (m.ifType === "elif") return `elif ${m.condition || 'condition'}:`;
+      return `if ${m.condition || 'condition'}:`;
+    }
+  },
+  break: {
+    id: "break",
+    label: "Break",
+    Editor: () => <div className="text-xs text-slate-500">Exits the current loop</div>,
+    generate: () => "break"
+  },
+  continue: {
+    id: "continue",
+    label: "Continue",
+    Editor: () => <div className="text-xs text-slate-500">Skips to next iteration</div>,
+    generate: () => "continue"
+  },
+  datetime_parse: {
+    id: "datetime_parse",
+    label: "Parse Date",
+    Editor: DateTimeParseEditor,
+    generate: (m) => `${m.varName || 'date'} = parseDate(${m.source || 'INPUT.date'}, "${m.format || 'yyyyMMdd'}")`
+  },
+  datetime_format: {
+    id: "datetime_format",
+    label: "Format Date",
+    Editor: DateTimeFormatEditor,
+    generate: (m) => `formatDate(${m.dateVar || 'date'}, "${m.format || 'yyyy-MM-dd'}")`
+  },
+  datetime_add: {
+    id: "datetime_add",
+    label: "Add Time",
+    Editor: DateTimeAddEditor,
+    generate: (m) => `${m.varName || 'newDate'} = ${m.operation || 'addDays'}(${m.source || 'date'}, ${m.amount || '1'})`
   }
 };
 
