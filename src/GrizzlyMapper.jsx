@@ -822,64 +822,137 @@ export default function GrizzlyMapper() {
         {step === 3 && (
           <div className="max-w-6xl mx-auto space-y-6 mt-6">
             
-            {/* Change Dashboard */}
-            {originalModules && (() => {
-              const changes = calculateChanges();
+            {/* Change Dashboard - Always Show */}
+            {(() => {
+              const changes = originalModules ? calculateChanges() : { added: [], removed: [], modified: [], unchanged: [] };
               const hasChanges = changes.added.length > 0 || changes.removed.length > 0 || changes.modified.length > 0;
+              const totalMappings = modules.reduce((sum, mod) => sum + mod.mappings.length, 0);
               
-              return hasChanges && (
-                <div className="grid grid-cols-3 gap-4 mb-6">
-                  {/* Added */}
-                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Plus size={16} className="text-emerald-600"/>
-                      <h3 className="font-bold text-sm text-emerald-800">Added ({changes.added.length})</h3>
-                    </div>
-                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {changes.added.map((m, idx) => (
-                        <div key={idx} className="text-xs font-mono text-emerald-700 bg-white rounded px-2 py-1">
-                          {m.module !== "main" && <span className="text-emerald-500">[{m.module}]</span>} {m.target}
+              return (
+                <div className="space-y-4">
+                  {/* Summary Stats */}
+                  <div className="bg-white border border-slate-200 rounded-xl p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-lg font-bold text-slate-800">Mapping Summary</h2>
+                      <div className="flex items-center gap-4">
+                        <div className="text-right">
+                          <div className="text-2xl font-bold text-blue-600">{totalMappings}</div>
+                          <div className="text-xs text-slate-500">Total Mappings</div>
                         </div>
-                      ))}
+                        <div className="text-right">
+                          <div className="text-2xl font-bold text-purple-600">{modules.length}</div>
+                          <div className="text-xs text-slate-500">Modules</div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-
-                  {/* Modified */}
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <ArrowRight size={16} className="text-amber-600"/>
-                      <h3 className="font-bold text-sm text-amber-800">Modified ({changes.modified.length})</h3>
-                    </div>
-                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {changes.modified.map((m, idx) => (
-                        <div key={idx} className="text-xs bg-white rounded px-2 py-1">
-                          <div className="font-mono text-amber-700">
-                            {m.current.module !== "main" && <span className="text-amber-500">[{m.current.module}]</span>} {m.current.target}
+                    
+                    {/* Module Breakdown */}
+                    <div className="grid grid-cols-2 gap-3">
+                      {modules.map(mod => (
+                        <div key={mod.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-4 py-2 border border-slate-200">
+                          <div className="flex items-center gap-2">
+                            <Layers size={14} className="text-slate-400"/>
+                            <span className="text-sm font-semibold text-slate-700">{mod.name}</span>
                           </div>
-                          <div className="text-[10px] text-amber-600 flex items-center gap-1 mt-0.5">
-                            <span className="line-through">{m.original.source}</span>
-                            <ArrowRight size={10}/>
-                            <span>{m.current.source}</span>
+                          <span className="text-xs text-slate-500">{mod.mappings.length} mappings</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* Changes Dashboard */}
+                  {hasChanges && (
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+                        <ArrowRight size={16} className="text-blue-600"/>
+                        Changes from Original Template
+                      </h3>
+                      <div className="grid grid-cols-3 gap-4">
+                        {/* Added */}
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
+                          <div className="flex items-center gap-2 mb-3">
+                            <Plus size={16} className="text-emerald-600"/>
+                            <h3 className="font-bold text-sm text-emerald-800">Added ({changes.added.length})</h3>
+                          </div>
+                          <div className="space-y-1 max-h-40 overflow-y-auto">
+                            {changes.added.length === 0 ? (
+                              <div className="text-xs text-emerald-600/50 italic">No new mappings</div>
+                            ) : (
+                              changes.added.map((m, idx) => (
+                                <div key={idx} className="text-xs font-mono text-emerald-700 bg-white rounded px-2 py-1.5 border border-emerald-100">
+                                  <div className="font-semibold">{m.target}</div>
+                                  {m.module !== "main" && <div className="text-[10px] text-emerald-500">Module: {m.module}</div>}
+                                  <div className="text-[10px] text-emerald-600 mt-0.5">
+                                    Type: {TRANSFORMATION_PLUGINS[m.transformation]?.label || m.transformation}
+                                  </div>
+                                </div>
+                              ))
+                            )}
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  </div>
 
-                  {/* Removed */}
-                  <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <X size={16} className="text-rose-600"/>
-                      <h3 className="font-bold text-sm text-rose-800">Removed ({changes.removed.length})</h3>
-                    </div>
-                    <div className="space-y-1 max-h-32 overflow-y-auto">
-                      {changes.removed.map((m, idx) => (
-                        <div key={idx} className="text-xs font-mono text-rose-700 bg-white rounded px-2 py-1 line-through">
-                          {m.module !== "main" && <span className="text-rose-500">[{m.module}]</span>} {m.target}
+                        {/* Modified */}
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                          <div className="flex items-center gap-2 mb-3">
+                            <ArrowRight size={16} className="text-amber-600"/>
+                            <h3 className="font-bold text-sm text-amber-800">Modified ({changes.modified.length})</h3>
+                          </div>
+                          <div className="space-y-1 max-h-40 overflow-y-auto">
+                            {changes.modified.length === 0 ? (
+                              <div className="text-xs text-amber-600/50 italic">No changes</div>
+                            ) : (
+                              changes.modified.map((m, idx) => (
+                                <div key={idx} className="text-xs bg-white rounded px-2 py-1.5 border border-amber-100">
+                                  <div className="font-mono font-semibold text-amber-700">{m.current.target}</div>
+                                  {m.current.module !== "main" && <div className="text-[10px] text-amber-500">Module: {m.current.module}</div>}
+                                  <div className="text-[10px] text-amber-600 flex items-center gap-1 mt-1">
+                                    <span className="line-through opacity-50">{m.original.source || 'old'}</span>
+                                    <ArrowRight size={8}/>
+                                    <span className="font-semibold">{m.current.source || 'new'}</span>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
                         </div>
-                      ))}
+
+                        {/* Removed */}
+                        <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
+                          <div className="flex items-center gap-2 mb-3">
+                            <X size={16} className="text-rose-600"/>
+                            <h3 className="font-bold text-sm text-rose-800">Removed ({changes.removed.length})</h3>
+                          </div>
+                          <div className="space-y-1 max-h-40 overflow-y-auto">
+                            {changes.removed.length === 0 ? (
+                              <div className="text-xs text-rose-600/50 italic">Nothing removed</div>
+                            ) : (
+                              changes.removed.map((m, idx) => (
+                                <div key={idx} className="text-xs font-mono text-rose-700 bg-white rounded px-2 py-1.5 border border-rose-100 line-through opacity-75">
+                                  <div className="font-semibold">{m.target}</div>
+                                  {m.module !== "main" && <div className="text-[10px] text-rose-500">Module: {m.module}</div>}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
+                  
+                  {/* When no original template was loaded */}
+                  {!originalModules && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 size={16} className="text-blue-600"/>
+                        <div>
+                          <div className="text-sm font-semibold text-blue-900">New Template Created</div>
+                          <div className="text-xs text-blue-700 mt-1">
+                            You created {totalMappings} mapping{totalMappings !== 1 ? 's' : ''} across {modules.length} module{modules.length !== 1 ? 's' : ''}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
