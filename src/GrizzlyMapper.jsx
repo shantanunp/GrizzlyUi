@@ -285,6 +285,119 @@ const DateTimeAddEditor = ({ mapping, onChange }) => (
   </div>
 );
 
+const DecimalEditor = ({ mapping, onChange, onOpenSidebar }) => (
+  <div className="space-y-2">
+    <div className="bg-blue-50 border border-blue-200 rounded px-2 py-1.5 mb-2">
+      <div className="text-[10px] font-semibold text-blue-900">💰 Exact Precision Math</div>
+      <div className="text-[9px] text-blue-700">Avoid float errors in money calculations</div>
+    </div>
+    
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Operation Type</label>
+    <select value={mapping.decimalOp || "create"} onChange={(e) => onChange({ decimalOp: e.target.value })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5">
+      <option value="create">Create Decimal</option>
+      <option value="add">Add</option>
+      <option value="subtract">Subtract</option>
+      <option value="multiply">Multiply</option>
+      <option value="divide">Divide</option>
+      <option value="round">Round</option>
+    </select>
+    
+    {mapping.decimalOp === "create" && (
+      <>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Variable Name</label>
+        <input value={mapping.varName || ""} onChange={(e) => onChange({ varName: e.target.value })} placeholder="amount" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+        
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Value Source</label>
+        <input value={mapping.source || ""} onChange={(e) => onChange({ source: e.target.value })} onClick={() => onOpenSidebar && onOpenSidebar("source")} placeholder="INPUT.amount or &quot;1234.56&quot;" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5 cursor-pointer hover:bg-blue-50"/>
+      </>
+    )}
+    
+    {(mapping.decimalOp === "add" || mapping.decimalOp === "subtract" || mapping.decimalOp === "multiply" || mapping.decimalOp === "divide") && (
+      <>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Result Variable</label>
+        <input value={mapping.resultVar || ""} onChange={(e) => onChange({ resultVar: e.target.value })} placeholder="total" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+        
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block">First Value</label>
+            <input value={mapping.value1 || ""} onChange={(e) => onChange({ value1: e.target.value })} placeholder="amount1" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+          </div>
+          <div>
+            <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block">Second Value</label>
+            <input value={mapping.value2 || ""} onChange={(e) => onChange({ value2: e.target.value })} placeholder="amount2" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+          </div>
+        </div>
+      </>
+    )}
+    
+    {mapping.decimalOp === "round" && (
+      <>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Decimal Variable</label>
+        <input value={mapping.source || ""} onChange={(e) => onChange({ source: e.target.value })} placeholder="amount" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+        
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Decimal Places</label>
+        <select value={mapping.decimals || "2"} onChange={(e) => onChange({ decimals: e.target.value })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5">
+          <option value="0">0 (whole number)</option>
+          <option value="2">2 (cents)</option>
+          <option value="4">4 (precise)</option>
+        </select>
+      </>
+    )}
+    
+    <div className="text-[9px] text-slate-500 mt-2 space-y-0.5">
+      <div>• Create: amount = Decimal("1234.56")</div>
+      <div>• Calculate: total = amount * Decimal("1.05")</div>
+      <div>• Round: round(amount, 2)</div>
+    </div>
+  </div>
+);
+
+const RegexEditor = ({ mapping, onChange, onOpenSidebar }) => (
+  <div className="space-y-2">
+    <div className="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 mb-2">
+      <div className="text-[10px] font-semibold text-purple-900">🔍 Pattern Matching</div>
+      <div className="text-[9px] text-purple-700">Validate, extract, or replace text patterns</div>
+    </div>
+    
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Operation Type</label>
+    <select value={mapping.regexOp || "match"} onChange={(e) => onChange({ regexOp: e.target.value })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5">
+      <option value="match">Match (validate)</option>
+      <option value="search">Search (find)</option>
+      <option value="findall">Find All</option>
+      <option value="replace">Replace</option>
+      <option value="split">Split</option>
+    </select>
+    
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Pattern</label>
+    <input value={mapping.pattern || ""} onChange={(e) => onChange({ pattern: e.target.value })} placeholder="^\d{3}-\d{2}-\d{4}$" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5 bg-slate-50"/>
+    
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Source Text</label>
+    <input value={mapping.source || ""} onChange={(e) => onChange({ source: e.target.value })} onClick={() => onOpenSidebar && onOpenSidebar("source")} placeholder="INPUT.ssn" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5 cursor-pointer hover:bg-blue-50"/>
+    
+    {mapping.regexOp === "replace" && (
+      <>
+        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-2">Replace With</label>
+        <input value={mapping.replacement || ""} onChange={(e) => onChange({ replacement: e.target.value })} placeholder="" className="w-full text-xs font-mono border border-slate-200 rounded px-2 py-1.5"/>
+      </>
+    )}
+    
+    <div className="bg-slate-50 rounded p-2 mt-2">
+      <div className="text-[9px] font-semibold text-slate-700 mb-1">Common Patterns:</div>
+      <div className="space-y-0.5 text-[9px] text-slate-600 font-mono">
+        <div>• SSN: ^\d{"{3}"}-\d{"{2}"}-\d{"{4}"}$</div>
+        <div>• Email: ^[\w\.-]+@[\w\.-]+\.\w+$</div>
+        <div>• Phone: ^\d{"{3}"}-\d{"{3}"}-\d{"{4}"}$</div>
+        <div>• Digits only: \d+</div>
+        <div>• Remove non-digits: \D (replace with "")</div>
+      </div>
+    </div>
+    
+    <div className="text-[9px] text-slate-500 mt-2">
+      Use in if: if re.match(pattern, text)
+    </div>
+  </div>
+);
+
 const TRANSFORMATION_PLUGINS = {
   direct: { 
     id: "direct", 
@@ -361,6 +474,49 @@ const TRANSFORMATION_PLUGINS = {
     label: "Add Time",
     Editor: DateTimeAddEditor,
     generate: (m) => `${m.varName || 'newDate'} = ${m.operation || 'addDays'}(${m.source || 'date'}, ${m.amount || '1'})`
+  },
+  decimal: {
+    id: "decimal",
+    label: "Decimal/Money",
+    Editor: DecimalEditor,
+    generate: (m) => {
+      if (m.decimalOp === "create") {
+        return `${m.varName || 'amount'} = Decimal(${m.source || '"0"'})`;
+      } else if (m.decimalOp === "add") {
+        return `${m.resultVar || 'result'} = ${m.value1 || 'val1'} + ${m.value2 || 'val2'}`;
+      } else if (m.decimalOp === "subtract") {
+        return `${m.resultVar || 'result'} = ${m.value1 || 'val1'} - ${m.value2 || 'val2'}`;
+      } else if (m.decimalOp === "multiply") {
+        return `${m.resultVar || 'result'} = ${m.value1 || 'val1'} * ${m.value2 || 'val2'}`;
+      } else if (m.decimalOp === "divide") {
+        return `${m.resultVar || 'result'} = ${m.value1 || 'val1'} / ${m.value2 || 'val2'}`;
+      } else if (m.decimalOp === "round") {
+        return `round(${m.source || 'amount'}, ${m.decimals || '2'})`;
+      }
+      return "Decimal(\"0\")";
+    }
+  },
+  regex: {
+    id: "regex",
+    label: "Regex",
+    Editor: RegexEditor,
+    generate: (m) => {
+      const pattern = m.pattern || "pattern";
+      const source = m.source || "INPUT.text";
+      
+      if (m.regexOp === "match") {
+        return `re.match(r"${pattern}", ${source})`;
+      } else if (m.regexOp === "search") {
+        return `re.search(r"${pattern}", ${source})`;
+      } else if (m.regexOp === "findall") {
+        return `re.findall(r"${pattern}", ${source})`;
+      } else if (m.regexOp === "replace") {
+        return `re.sub(r"${pattern}", "${m.replacement || ''}", ${source})`;
+      } else if (m.regexOp === "split") {
+        return `re.split(r"${pattern}", ${source})`;
+      }
+      return `re.match(r"${pattern}", ${source})`;
+    }
   }
 };
 
