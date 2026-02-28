@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Upload, FileCode, ArrowRight, ArrowLeft, Trash2, Zap, Download, ChevronDown, ChevronRight, CheckCircle2, Copy, X, Search, Database, Type, Layers, Plus } from "lucide-react";
+import { Upload, FileCode, ArrowRight, ArrowLeft, Trash2, Zap, Download, ChevronDown, ChevronRight, CheckCircle2, Copy, X, Search, Database, Type, Layers, Plus, Phone } from "lucide-react";
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -60,21 +60,15 @@ const parseTemplate = (pythonCode) => {
     if (!currentModule) return;
 
     // Parse module calls: map_modulename(INPUT, OUTPUT)
-    const moduleCallMatch = trimmed.match(/map_(\w+)\(INPUT, OUTPUT\)/);
+    const moduleCallMatch = trimmed.match(/^map_(\w+)\(INPUT, OUTPUT\)/);
     if (moduleCallMatch) {
-      const prevLine = lines[idx - 1]?.trim();
-      const targetMatch = prevLine?.match(/# (.+) → use (\w+) module/);
-      if (targetMatch) {
-        currentModule.mappings.push({
-          id: uid(),
-          target: targetMatch[1],
-          source: moduleCallMatch[1],
-          isModule: true,
-          transformation: "direct",
-          isNew: false
-        });
-        totalMappings++;
-      }
+      currentModule.mappings.push({
+        id: uid(),
+        moduleName: moduleCallMatch[1],
+        type: "module_call",
+        isNew: false
+      });
+      totalMappings++;
       return;
     }
 
@@ -87,6 +81,7 @@ const parseTemplate = (pythonCode) => {
         source: simpleMatch[2],
         transform: simpleMatch[3] || null,
         transformation: "direct",
+        type: "field",
         isNew: false
       });
       totalMappings++;
@@ -96,7 +91,6 @@ const parseTemplate = (pythonCode) => {
     // Parse nested assignment: OUTPUT["a"]["b"]["c"] = INPUT.source.path
     const nestedMatch = trimmed.match(/OUTPUT(\["[^"]+"\])+\s*=\s*INPUT\.([\w.]+?)(?:\.(\w+)\(\))?$/);
     if (nestedMatch) {
-      // Extract all the path parts from OUTPUT["a"]["b"]["c"]
       const pathParts = [...trimmed.matchAll(/\["([^"]+)"\]/g)].map(m => m[1]);
       const target = pathParts.join('.');
       const sourceParts = nestedMatch[2].split('.');
@@ -108,6 +102,7 @@ const parseTemplate = (pythonCode) => {
         source,
         transform,
         transformation: "direct",
+        type: "field",
         isNew: false
       });
       totalMappings++;
@@ -127,6 +122,7 @@ const parseTemplate = (pythonCode) => {
         thenValue: cleanVal(condMatch[2]),
         elseValue: cleanVal(condMatch[6]),
         transformation: "conditional",
+        type: "field",
         isNew: false
       });
       totalMappings++;
@@ -140,7 +136,7 @@ const parseTemplate = (pythonCode) => {
 
 const DirectEditor = ({ mapping, onChange, onOpenSidebar }) => (
   <div className="space-y-2">
-    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Source Field or Module</label>
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Source Field</label>
     <div className="relative flex-1">
       <Database size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
       <input 
@@ -148,28 +144,19 @@ const DirectEditor = ({ mapping, onChange, onOpenSidebar }) => (
         onChange={(e) => onChange({ source: e.target.value })} 
         onClick={() => onOpenSidebar("source")} 
         className="w-full pl-8 pr-2.5 py-2 text-xs font-mono border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-300 cursor-pointer hover:bg-blue-50" 
-        placeholder="Click to select field or module..."
+        placeholder="Click to select field..."
       />
     </div>
-    {mapping.isModule && (
-      <div className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">
-        📦 Using module: {mapping.source}
-      </div>
-    )}
-    {!mapping.isModule && (
-      <>
-        <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-3">Transform</label>
-        <select value={mapping.transform || ""} onChange={(e) => onChange({ transform: e.target.value || null })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5 bg-white focus:ring-1 focus:ring-blue-300 outline-none">
-          <option value="">None</option>
-          <option value="upper">UPPERCASE</option>
-          <option value="lower">lowercase</option>
-          <option value="capitalize">Capitalize</option>
-          <option value="format_ssn">Format SSN</option>
-          <option value="format_date">Format Date</option>
-          <option value="format_phone">Format Phone</option>
-        </select>
-      </>
-    )}
+    <label className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mt-3">Transform</label>
+    <select value={mapping.transform || ""} onChange={(e) => onChange({ transform: e.target.value || null })} className="w-full text-xs border border-slate-200 rounded px-2 py-1.5 bg-white focus:ring-1 focus:ring-blue-300 outline-none">
+      <option value="">None</option>
+      <option value="upper">UPPERCASE</option>
+      <option value="lower">lowercase</option>
+      <option value="capitalize">Capitalize</option>
+      <option value="format_ssn">Format SSN</option>
+      <option value="format_date">Format Date</option>
+      <option value="format_phone">Format Phone</option>
+    </select>
   </div>
 );
 
@@ -404,7 +391,6 @@ const TRANSFORMATION_PLUGINS = {
     label: "Direct", 
     Editor: DirectEditor, 
     generate: (m) => { 
-      if (m.isModule) return `→ ${m.source} module`;
       const src = m.source || "source"; 
       let code = `INPUT.${src}`;
       if (m.transform === "upper") code += ".upper()"; 
@@ -557,11 +543,9 @@ const FieldTree = ({ fields, title, accent }) => {
   );
 };
 
-const FieldBrowserSidebar = ({ fields, modules, activeModule, title, mode, onClose, onSelect, onSelectModule }) => {
+const FieldBrowserSidebar = ({ fields, title, onClose, onSelect }) => {
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState("fields");
   const filtered = fields.filter(f => f.path.toLowerCase().includes(search.toLowerCase()));
-  const availableModules = modules.filter((m, idx) => idx !== activeModule && m.name !== "main");
   
   return (
     <div className="w-80 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden flex flex-col" style={{maxHeight: "600px"}}>
@@ -569,33 +553,54 @@ const FieldBrowserSidebar = ({ fields, modules, activeModule, title, mode, onClo
         <h3 className="font-bold text-sm text-slate-700">{title}</h3>
         <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
       </div>
-      {mode === "source" && availableModules.length > 0 && (
-        <div className="flex border-b border-slate-200">
-          <button onClick={() => setTab("fields")} className={`flex-1 px-4 py-2 text-xs font-semibold ${tab === "fields" ? "bg-blue-50 text-blue-600 border-b-2 border-blue-600" : "text-slate-500 hover:bg-slate-50"}`}>Fields</button>
-          <button onClick={() => setTab("modules")} className={`flex-1 px-4 py-2 text-xs font-semibold ${tab === "modules" ? "bg-blue-50 text-blue-600 border-b-2 border-blue-600" : "text-slate-500 hover:bg-slate-50"}`}>Modules</button>
-        </div>
-      )}
       <div className="p-3 border-b border-slate-100">
         <div className="relative">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search ${tab}...`} className="w-full pl-8 pr-2.5 py-1.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-300"/>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search fields..." className="w-full pl-8 pr-2.5 py-1.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-300"/>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
-        {tab === "fields" ? (
-          filtered.map(f => (
-            <button key={f.path} onClick={() => onSelect(f.path)} className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-blue-50 rounded-md text-slate-600 hover:text-blue-600 transition-colors flex items-center gap-2">
-              {f.type === "object" ? <Type size={12} className="text-slate-400"/> : <Database size={12} className="text-blue-400"/>}
-              <span className="flex-1">{f.path}</span>
-              <span className="text-[9px] text-slate-300">{f.type !== "object" && f.type}</span>
-            </button>
-          ))
+        {filtered.map(f => (
+          <button key={f.path} onClick={() => onSelect(f.path)} className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-blue-50 rounded-md text-slate-600 hover:text-blue-600 transition-colors flex items-center gap-2">
+            {f.type === "object" ? <Type size={12} className="text-slate-400"/> : <Database size={12} className="text-blue-400"/>}
+            <span className="flex-1">{f.path}</span>
+            <span className="text-[9px] text-slate-300">{f.type !== "object" && f.type}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const ModuleBrowserSidebar = ({ modules, activeModule, onClose, onSelect }) => {
+  const [search, setSearch] = useState("");
+  const availableModules = modules.filter((m, idx) => idx !== activeModule && m.name !== "main");
+  const filtered = availableModules.filter(m => m.name.toLowerCase().includes(search.toLowerCase()));
+  
+  return (
+    <div className="w-80 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden flex flex-col" style={{maxHeight: "600px"}}>
+      <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+        <h3 className="font-bold text-sm text-slate-700">Select Module</h3>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={16}/></button>
+      </div>
+      <div className="p-3 border-b border-slate-100">
+        <div className="relative">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search modules..." className="w-full pl-8 pr-2.5 py-1.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-300"/>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2">
+        {filtered.length === 0 ? (
+          <div className="text-center py-8 text-slate-400">
+            <Layers size={32} className="mx-auto mb-2 opacity-30"/>
+            <div className="text-xs">No other modules available</div>
+          </div>
         ) : (
-          availableModules.filter(m => m.name.toLowerCase().includes(search.toLowerCase())).map(m => (
-            <button key={m.id} onClick={() => onSelectModule(m.name)} className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 rounded-md text-slate-700 hover:text-amber-700 transition-colors flex items-center gap-2 border border-transparent hover:border-amber-200">
+          filtered.map(m => (
+            <button key={m.id} onClick={() => onSelect(m.name)} className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 rounded-md text-slate-700 hover:text-amber-700 transition-colors flex items-center gap-2 border border-transparent hover:border-amber-200">
               <Layers size={14} className="text-amber-600"/>
               <div className="flex-1">
-                <div className="font-semibold">{m.name}</div>
+                <div className="font-semibold font-mono">{m.name}</div>
                 <div className="text-[10px] text-slate-400">{m.mappings.length} mappings</div>
               </div>
             </button>
@@ -620,7 +625,7 @@ export default function GrizzlyMapper() {
   const [sidebarState, setSidebarState] = useState({ isOpen: false, mode: "source", rowIdx: null, field: null });
   const [templateLoaded, setTemplateLoaded] = useState(false);
   const [templateInfo, setTemplateInfo] = useState("");
-  const [originalModules, setOriginalModules] = useState(null); // Track original state for diff
+  const [originalModules, setOriginalModules] = useState(null);
 
   const mappings = modules[activeModule]?.mappings || [];
 
@@ -632,23 +637,20 @@ export default function GrizzlyMapper() {
     const currentFlat = {};
     const originalFlat = {};
     
-    // Flatten current modules
     modules.forEach(mod => {
       mod.mappings.forEach(m => {
-        const key = `${mod.name}:${m.target}`;
+        const key = m.type === 'module_call' ? `${mod.name}:call_${m.moduleName}` : `${mod.name}:${m.target}`;
         currentFlat[key] = { module: mod.name, ...m };
       });
     });
     
-    // Flatten original modules
     originalModules.forEach(mod => {
       mod.mappings.forEach(m => {
-        const key = `${mod.name}:${m.target}`;
+        const key = m.type === 'module_call' ? `${mod.name}:call_${m.moduleName}` : `${mod.name}:${m.target}`;
         originalFlat[key] = { module: mod.name, ...m };
       });
     });
     
-    // Find added and modified
     Object.keys(currentFlat).forEach(key => {
       if (!originalFlat[key]) {
         changes.added.push(currentFlat[key]);
@@ -656,7 +658,7 @@ export default function GrizzlyMapper() {
         const curr = currentFlat[key];
         const orig = originalFlat[key];
         if (curr.source !== orig.source || curr.transformation !== orig.transformation || 
-            curr.transform !== orig.transform || curr.isModule !== orig.isModule) {
+            curr.transform !== orig.transform || curr.moduleName !== orig.moduleName) {
           changes.modified.push({ current: curr, original: orig });
         } else {
           changes.unchanged.push(curr);
@@ -664,7 +666,6 @@ export default function GrizzlyMapper() {
       }
     });
     
-    // Find removed
     Object.keys(originalFlat).forEach(key => {
       if (!currentFlat[key]) {
         changes.removed.push(originalFlat[key]);
@@ -691,7 +692,7 @@ export default function GrizzlyMapper() {
           const parsed = parseTemplate(content);
           if (parsed.modules) {
             setModules(parsed.modules);
-            setOriginalModules(JSON.parse(JSON.stringify(parsed.modules))); // Deep copy
+            setOriginalModules(JSON.parse(JSON.stringify(parsed.modules)));
             setActiveModule(0);
             setTemplateLoaded(true);
             setTemplateInfo(`${parsed.totalMappings} mappings, ${parsed.modules.length} modules`);
@@ -722,6 +723,9 @@ export default function GrizzlyMapper() {
   };
 
   const updateModuleName = (idx, name) => {
+    // CHANGE 1: Don't allow renaming main module
+    if (modules[idx].name === "main") return;
+    
     const newModules = [...modules];
     newModules[idx] = { ...newModules[idx], name };
     setModules(newModules);
@@ -740,11 +744,19 @@ export default function GrizzlyMapper() {
     setModules(newModules);
   };
 
+  // CHANGE 2: Add field mapping (old way)
   const addMapping = () => {
-    const newMapping = { id: uid(), target: "", source: "", transformation: "direct", isNew: true };
+    const newMapping = { id: uid(), target: "", source: "", transformation: "direct", type: "field", isNew: true };
     const newMappings = [...mappings, newMapping];
     updateModuleMappings(activeModule, newMappings);
     setExpandedRow(newMappings.length - 1);
+  };
+
+  // CHANGE 2: Add module call (new way - add empty row)
+  const addModuleCall = () => {
+    const newModuleCall = { id: uid(), moduleName: "", type: "module_call", isNew: true };
+    const newMappings = [...mappings, newModuleCall];
+    updateModuleMappings(activeModule, newMappings);
   };
 
   const updateMapping = (idx, updates) => {
@@ -765,22 +777,10 @@ export default function GrizzlyMapper() {
   const handleSidebarSelect = (path) => {
     if (sidebarState.rowIdx !== null) {
       if (sidebarState.field) {
-        updateMapping(sidebarState.rowIdx, { [sidebarState.field]: path, isModule: false });
+        updateMapping(sidebarState.rowIdx, { [sidebarState.field]: path });
       } else {
         const key = sidebarState.mode === "target" ? "target" : "source";
-        updateMapping(sidebarState.rowIdx, { [key]: path, isModule: false });
-      }
-    }
-    setSidebarState({ ...sidebarState, isOpen: false });
-  };
-
-  const handleModuleSelect = (moduleName) => {
-    if (sidebarState.rowIdx !== null) {
-      if (sidebarState.field) {
-        updateMapping(sidebarState.rowIdx, { [sidebarState.field]: moduleName, isModule: true });
-      } else {
-        const key = sidebarState.mode === "target" ? "target" : "source";
-        updateMapping(sidebarState.rowIdx, { [key]: moduleName, isModule: true });
+        updateMapping(sidebarState.rowIdx, { [key]: path });
       }
     }
     setSidebarState({ ...sidebarState, isOpen: false });
@@ -793,7 +793,7 @@ export default function GrizzlyMapper() {
         inField.path.toLowerCase().replace(/_/g, "") === outField.path.toLowerCase().replace(/_/g, "")
       );
       if (similarInput) {
-        newMappings.push({ id: uid(), target: outField.path, source: similarInput.path, transformation: "direct", isNew: false });
+        newMappings.push({ id: uid(), target: outField.path, source: similarInput.path, transformation: "direct", type: "field", isNew: false });
       }
     });
     updateModuleMappings(activeModule, newMappings);
@@ -808,29 +808,29 @@ export default function GrizzlyMapper() {
     lines.push('"""');
     lines.push("");
     
+    // Add import re if regex is used
+    const hasRegex = modules.some(m => m.mappings.some(map => map.transformation === 'regex'));
+    if (hasRegex) {
+      lines.push("import re");
+      lines.push("");
+    }
+    
+    // STEP 1: Generate helper module functions FIRST (not main)
     modules.forEach((module) => {
-      if (module.mappings.length === 0) return;
+      if (module.name === "main" || module.mappings.length === 0) return;
       
-      if (module.name === "main") {
-        lines.push("def transform(INPUT):");
-        lines.push('    """Main transformation"""');
-        lines.push("    OUTPUT = {}");
-        lines.push("    ");
-      } else {
-        lines.push(`def map_${module.name}(INPUT, OUTPUT):`);
-        lines.push(`    """${module.name} mappings"""`);
-        lines.push("    ");
-      }
+      lines.push(`def map_${module.name}(INPUT, OUTPUT):`);
+      lines.push(`    """${module.name} mappings"""`);
       
       module.mappings.forEach(m => {
-        const Plugin = TRANSFORMATION_PLUGINS[m.transformation];
-        if (!Plugin || !m.target) return;
-        
-        if (m.isModule && m.source) {
-          lines.push(`    # ${m.target} → use ${m.source} module`);
-          lines.push(`    map_${m.source}(INPUT, OUTPUT)`);
+        if (m.type === "module_call") {
+          lines.push(`    # Call ${m.moduleName} module`);
+          lines.push(`    map_${m.moduleName}(INPUT, OUTPUT)`);
           return;
         }
+        
+        const Plugin = TRANSFORMATION_PLUGINS[m.transformation];
+        if (!Plugin || !m.target) return;
         
         const targetPath = m.target.split(".");
         const code = Plugin.generate(m);
@@ -844,12 +844,46 @@ export default function GrizzlyMapper() {
         lines.push(assignment);
       });
       
-      if (module.name === "main") {
-        lines.push("    ");
-        lines.push("    return OUTPUT");
-      }
       lines.push("");
     });
+    
+    // STEP 2: Generate main transform function LAST
+    const mainModule = modules.find(m => m.name === "main");
+    if (mainModule) {
+      lines.push("def transform(INPUT):");
+      lines.push('    """Main transformation"""');
+      lines.push("    OUTPUT = {}");
+      lines.push("    ");
+      
+      // Process all mappings in order
+      mainModule.mappings.forEach(m => {
+        if (m.type === "module_call") {
+          // Module calls
+          lines.push(`    # Call ${m.moduleName} module`);
+          lines.push(`    map_${m.moduleName}(INPUT, OUTPUT)`);
+          lines.push("    ");
+          return;
+        }
+        
+        // Regular field mappings
+        const Plugin = TRANSFORMATION_PLUGINS[m.transformation];
+        if (!Plugin || !m.target) return;
+        
+        const targetPath = m.target.split(".");
+        const code = Plugin.generate(m);
+        let assignment = "";
+        if (targetPath.length === 1) {
+          assignment = `    OUTPUT["${targetPath[0]}"] = ${code}`;
+        } else {
+          const parts = targetPath.map(p => `["${p}"]`).join("");
+          assignment = `    OUTPUT${parts} = ${code}`;
+        }
+        lines.push(assignment);
+      });
+      
+      lines.push("    ");
+      lines.push("    return OUTPUT");
+    }
     
     return lines.join("\n");
   };
@@ -909,7 +943,14 @@ export default function GrizzlyMapper() {
                 <h2 className="font-bold text-sm text-slate-700">Mapping Configuration</h2>
                 <div className="flex gap-2">
                   <button onClick={autoMap} className="text-xs font-semibold text-violet-600 bg-violet-50 px-3 py-1.5 rounded hover:bg-violet-100 border border-violet-100">Auto-Map</button>
-                  <button onClick={addMapping} className="text-xs font-semibold text-white bg-emerald-600 px-3 py-1.5 rounded hover:bg-emerald-700 shadow-sm">+ Add Field</button>
+                  <button onClick={addMapping} className="text-xs font-semibold text-white bg-emerald-600 px-3 py-1.5 rounded hover:bg-emerald-700 shadow-sm flex items-center gap-1">
+                    <Database size={12}/>
+                    Map Element
+                  </button>
+                  <button onClick={addModuleCall} className="text-xs font-semibold text-white bg-amber-600 px-3 py-1.5 rounded hover:bg-amber-700 shadow-sm flex items-center gap-1">
+                    <Phone size={12} className="transform rotate-90"/>
+                    Import Module
+                  </button>
                 </div>
               </div>
               
@@ -918,21 +959,54 @@ export default function GrizzlyMapper() {
                   <div key={module.id} className="flex items-center gap-1">
                     <button onClick={() => setActiveModule(idx)} className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${activeModule === idx ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
                       <Layers size={14}/>
-                      <input value={module.name} onChange={(e) => updateModuleName(idx, e.target.value)} onClick={(e) => e.stopPropagation()} className="bg-transparent border-none outline-none w-20 font-mono" style={{ color: 'inherit' }}/>
+                      {/* CHANGE 1: Main module name is readonly */}
+                      {module.name === "main" ? (
+                        <span className="font-mono w-20">main</span>
+                      ) : (
+                        <input value={module.name} onChange={(e) => updateModuleName(idx, e.target.value)} onClick={(e) => e.stopPropagation()} className="bg-transparent border-none outline-none w-20 font-mono" style={{ color: 'inherit' }}/>
+                      )}
                       <span className="text-[10px] opacity-70">({module.mappings.length})</span>
                     </button>
-                    {modules.length > 1 && (<button onClick={() => deleteModule(idx)} className="p-1 text-slate-400 hover:text-red-500"><X size={12}/></button>)}
+                    {modules.length > 1 && module.name !== "main" && (<button onClick={() => deleteModule(idx)} className="p-1 text-slate-400 hover:text-red-500"><X size={12}/></button>)}
                   </div>
                 ))}
                 <button onClick={addModule} className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-md"><Plus size={14}/> Module</button>
               </div>
 
               <div className="grid grid-cols-[30px_1fr_1fr_110px_40px] gap-4 px-4 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                <div></div><div>Target</div><div>Source / Module</div><div>Type</div><div></div>
+                <div></div><div>Target</div><div>Source</div><div>Type</div><div></div>
               </div>
               
               <div className="divide-y divide-slate-100 flex-1 overflow-y-auto">
                 {mappings.map((m, idx) => {
+                  // CHANGE 3: Module calls are readonly rows with clickable module selector
+                  if (m.type === "module_call") {
+                    return (
+                      <div key={m.id} className="group bg-amber-50/30 hover:bg-amber-50/50 transition-colors">
+                        <div className="grid grid-cols-[30px_1fr_1fr_110px_40px] gap-4 px-4 py-3 items-center">
+                          <div></div>
+                          <div className="text-xs font-mono text-amber-700 flex items-center gap-2">
+                            <Phone size={14} className="text-amber-600 transform rotate-90"/>
+                            Call module
+                          </div>
+                          <div className="relative flex-1">
+                            <Layers size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-amber-400"/>
+                            <input
+                              value={m.moduleName ? `map_${m.moduleName}()` : ""}
+                              readOnly
+                              onClick={() => openSidebar("module", idx)}
+                              className="w-full pl-8 pr-2.5 py-2 text-xs font-mono font-bold border border-amber-200 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer hover:bg-amber-50 bg-white text-amber-700"
+                              placeholder="Click to select module..."
+                            />
+                          </div>
+                          <div className="text-xs text-slate-400">module call</div>
+                          <button onClick={() => deleteMapping(idx)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  
+                  // Regular field mappings
                   const Plugin = TRANSFORMATION_PLUGINS[m.transformation];
                   return (
                     <div key={m.id} className={`group transition-colors ${expandedRow === idx ? "bg-slate-50" : "hover:bg-slate-50/40"}`}>
@@ -961,16 +1035,26 @@ export default function GrizzlyMapper() {
             </div>
             
             {sidebarState.isOpen && (
-              <FieldBrowserSidebar 
-                fields={sidebarState.mode === "target" ? outputFields : inputFields}
-                modules={modules}
-                activeModule={activeModule}
-                title={sidebarState.mode === "target" ? "Select Target" : "Select Source or Module"}
-                mode={sidebarState.mode}
-                onClose={() => setSidebarState({ ...sidebarState, isOpen: false })}
-                onSelect={handleSidebarSelect}
-                onSelectModule={handleModuleSelect}
-              />
+              sidebarState.mode === "module" ? (
+                <ModuleBrowserSidebar
+                  modules={modules}
+                  activeModule={activeModule}
+                  onClose={() => setSidebarState({ ...sidebarState, isOpen: false })}
+                  onSelect={(moduleName) => {
+                    if (sidebarState.rowIdx !== null) {
+                      updateMapping(sidebarState.rowIdx, { moduleName });
+                    }
+                    setSidebarState({ ...sidebarState, isOpen: false });
+                  }}
+                />
+              ) : (
+                <FieldBrowserSidebar 
+                  fields={sidebarState.mode === "target" ? outputFields : inputFields}
+                  title={sidebarState.mode === "target" ? "Select Target" : "Select Source"}
+                  onClose={() => setSidebarState({ ...sidebarState, isOpen: false })}
+                  onSelect={handleSidebarSelect}
+                />
+              )
             )}
           </div>
         )}
@@ -978,7 +1062,7 @@ export default function GrizzlyMapper() {
         {step === 3 && (
           <div className="max-w-6xl mx-auto space-y-6 mt-6">
             
-            {/* Change Dashboard - Always Show */}
+            {/* Change Dashboard */}
             {(() => {
               const changes = originalModules ? calculateChanges() : { added: [], removed: [], modified: [], unchanged: [] };
               const hasChanges = changes.added.length > 0 || changes.removed.length > 0 || changes.modified.length > 0;
@@ -986,7 +1070,6 @@ export default function GrizzlyMapper() {
               
               return (
                 <div className="space-y-4">
-                  {/* Summary Stats */}
                   <div className="bg-white border border-slate-200 rounded-xl p-6">
                     <div className="flex items-center justify-between mb-4">
                       <h2 className="text-lg font-bold text-slate-800">Mapping Summary</h2>
@@ -1002,7 +1085,6 @@ export default function GrizzlyMapper() {
                       </div>
                     </div>
                     
-                    {/* Module Breakdown */}
                     <div className="grid grid-cols-2 gap-3">
                       {modules.map(mod => (
                         <div key={mod.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-4 py-2 border border-slate-200">
@@ -1016,7 +1098,6 @@ export default function GrizzlyMapper() {
                     </div>
                   </div>
                   
-                  {/* Changes Dashboard */}
                   {hasChanges && (
                     <div>
                       <h3 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
@@ -1024,7 +1105,6 @@ export default function GrizzlyMapper() {
                         Changes from Original Template
                       </h3>
                       <div className="grid grid-cols-3 gap-4">
-                        {/* Added */}
                         <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4">
                           <div className="flex items-center gap-2 mb-3">
                             <Plus size={16} className="text-emerald-600"/>
@@ -1036,18 +1116,16 @@ export default function GrizzlyMapper() {
                             ) : (
                               changes.added.map((m, idx) => (
                                 <div key={idx} className="text-xs font-mono text-emerald-700 bg-white rounded px-2 py-1.5 border border-emerald-100">
-                                  <div className="font-semibold">{m.target}</div>
-                                  {m.module !== "main" && <div className="text-[10px] text-emerald-500">Module: {m.module}</div>}
-                                  <div className="text-[10px] text-emerald-600 mt-0.5">
-                                    Type: {TRANSFORMATION_PLUGINS[m.transformation]?.label || m.transformation}
+                                  <div className="font-semibold">
+                                    {m.type === 'module_call' ? `Call map_${m.moduleName}()` : m.target}
                                   </div>
+                                  {m.module !== "main" && <div className="text-[10px] text-emerald-500">Module: {m.module}</div>}
                                 </div>
                               ))
                             )}
                           </div>
                         </div>
 
-                        {/* Modified */}
                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
                           <div className="flex items-center gap-2 mb-3">
                             <ArrowRight size={16} className="text-amber-600"/>
@@ -1059,20 +1137,16 @@ export default function GrizzlyMapper() {
                             ) : (
                               changes.modified.map((m, idx) => (
                                 <div key={idx} className="text-xs bg-white rounded px-2 py-1.5 border border-amber-100">
-                                  <div className="font-mono font-semibold text-amber-700">{m.current.target}</div>
-                                  {m.current.module !== "main" && <div className="text-[10px] text-amber-500">Module: {m.current.module}</div>}
-                                  <div className="text-[10px] text-amber-600 flex items-center gap-1 mt-1">
-                                    <span className="line-through opacity-50">{m.original.source || 'old'}</span>
-                                    <ArrowRight size={8}/>
-                                    <span className="font-semibold">{m.current.source || 'new'}</span>
+                                  <div className="font-mono font-semibold text-amber-700">
+                                    {m.current.type === 'module_call' ? `Call map_${m.current.moduleName}()` : m.current.target}
                                   </div>
+                                  {m.current.module !== "main" && <div className="text-[10px] text-amber-500">Module: {m.current.module}</div>}
                                 </div>
                               ))
                             )}
                           </div>
                         </div>
 
-                        {/* Removed */}
                         <div className="bg-rose-50 border border-rose-200 rounded-lg p-4">
                           <div className="flex items-center gap-2 mb-3">
                             <X size={16} className="text-rose-600"/>
@@ -1084,7 +1158,9 @@ export default function GrizzlyMapper() {
                             ) : (
                               changes.removed.map((m, idx) => (
                                 <div key={idx} className="text-xs font-mono text-rose-700 bg-white rounded px-2 py-1.5 border border-rose-100 line-through opacity-75">
-                                  <div className="font-semibold">{m.target}</div>
+                                  <div className="font-semibold">
+                                    {m.type === 'module_call' ? `Call map_${m.moduleName}()` : m.target}
+                                  </div>
                                   {m.module !== "main" && <div className="text-[10px] text-rose-500">Module: {m.module}</div>}
                                 </div>
                               ))
@@ -1095,7 +1171,6 @@ export default function GrizzlyMapper() {
                     </div>
                   )}
                   
-                  {/* When no original template was loaded */}
                   {!originalModules && (
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                       <div className="flex items-center gap-2">
