@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { Upload, FileCode, ArrowRight, ArrowLeft, Trash2, Zap, Download, ChevronDown, ChevronRight, CheckCircle2, Copy, X, Search, Database, Type, Layers, Plus, Phone } from "lucide-react";
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -546,7 +546,7 @@ const FieldTree = ({ fields, title, accent }) => {
 const FieldBrowserSidebar = ({ fields, title, onClose, onSelect }) => {
   const [search, setSearch] = useState("");
   const filtered = fields.filter(f => f.path.toLowerCase().includes(search.toLowerCase()));
-  
+
   return (
     <div className="w-80 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden flex flex-col" style={{maxHeight: "600px"}}>
       <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50">
@@ -560,13 +560,28 @@ const FieldBrowserSidebar = ({ fields, title, onClose, onSelect }) => {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
-        {filtered.map(f => (
-          <button key={f.path} onClick={() => onSelect(f.path)} className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-blue-50 rounded-md text-slate-600 hover:text-blue-600 transition-colors flex items-center gap-2">
-            {f.type === "object" ? <Type size={12} className="text-slate-400"/> : <Database size={12} className="text-blue-400"/>}
-            <span className="flex-1">{f.path}</span>
-            <span className="text-[9px] text-slate-300">{f.type !== "object" && f.type}</span>
-          </button>
-        ))}
+        {filtered.map(f => {
+          const isObject = f.type === "object";
+          const indent = (f.depth || 0) * 12;
+          const fieldName = f.path.split(".").pop();
+
+          if (isObject) {
+            return (
+              <div key={f.path} className="w-full text-left px-3 py-1.5 text-xs font-mono text-slate-400 flex items-center gap-2" style={{ paddingLeft: `${12 + indent}px` }}>
+                <Type size={12} className="text-slate-300"/>
+                <span>{fieldName}</span>
+              </div>
+            );
+          }
+
+          return (
+            <button key={f.path} onClick={() => onSelect(f.path)} className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-blue-50 rounded-md text-slate-600 hover:text-blue-600 transition-colors flex items-center gap-2" style={{ paddingLeft: `${12 + indent}px` }}>
+              <Database size={12} className="text-blue-400"/>
+              <span className="flex-1">{fieldName}</span>
+              <span className="text-[9px] text-slate-300">{f.type}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -628,6 +643,13 @@ export default function GrizzlyMapper() {
   const [originalModules, setOriginalModules] = useState(null);
 
   const mappings = modules[activeModule]?.mappings || [];
+
+  // Display order: fields first, then module calls (grouped at bottom)
+  const displayMappings = useMemo(() => {
+    const fields = mappings.map((m, i) => ({ m, realIdx: i })).filter((x) => x.m.type === "field");
+    const calls = mappings.map((m, i) => ({ m, realIdx: i })).filter((x) => x.m.type === "module_call");
+    return [...fields, ...calls];
+  }, [mappings]);
 
   // Calculate changes for dashboard
   const calculateChanges = () => {
@@ -723,11 +745,21 @@ export default function GrizzlyMapper() {
   };
 
   const updateModuleName = (idx, name) => {
-    // CHANGE 1: Don't allow renaming main module
+    // Don't allow renaming main module
     if (modules[idx].name === "main") return;
-    
-    const newModules = [...modules];
-    newModules[idx] = { ...newModules[idx], name };
+    const oldName = modules[idx].name;
+    if (oldName === name) return;
+
+    // Update this module's name and sync to all module_call mappings (e.g. in main)
+    const newModules = modules.map((mod, i) => {
+      if (i === idx) return { ...mod, name };
+      return {
+        ...mod,
+        mappings: mod.mappings.map((m) =>
+          m.type === "module_call" && m.moduleName === oldName ? { ...m, moduleName: name } : m
+        ),
+      };
+    });
     setModules(newModules);
   };
 
@@ -978,8 +1010,7 @@ export default function GrizzlyMapper() {
               </div>
               
               <div className="divide-y divide-slate-100 flex-1 overflow-y-auto">
-                {mappings.map((m, idx) => {
-                  // CHANGE 3: Module calls are readonly rows with clickable module selector
+                {displayMappings.map(({ m, realIdx }) => {
                   if (m.type === "module_call") {
                     return (
                       <div key={m.id} className="group bg-amber-50/30 hover:bg-amber-50/50 transition-colors">
@@ -994,37 +1025,35 @@ export default function GrizzlyMapper() {
                             <input
                               value={m.moduleName ? `map_${m.moduleName}()` : ""}
                               readOnly
-                              onClick={() => openSidebar("module", idx)}
+                              onClick={() => openSidebar("module", realIdx)}
                               className="w-full pl-8 pr-2.5 py-2 text-xs font-mono font-bold border border-amber-200 rounded-md focus:outline-none focus:ring-1 focus:ring-amber-300 cursor-pointer hover:bg-amber-50 bg-white text-amber-700"
                               placeholder="Click to select module..."
                             />
                           </div>
                           <div className="text-xs text-slate-400">module call</div>
-                          <button onClick={() => deleteMapping(idx)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
+                          <button onClick={() => deleteMapping(realIdx)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
                         </div>
                       </div>
                     );
                   }
-                  
-                  // Regular field mappings
                   const Plugin = TRANSFORMATION_PLUGINS[m.transformation];
                   return (
-                    <div key={m.id} className={`group transition-colors ${expandedRow === idx ? "bg-slate-50" : "hover:bg-slate-50/40"}`}>
+                    <div key={m.id} className={`group transition-colors ${expandedRow === realIdx ? "bg-slate-50" : "hover:bg-slate-50/40"}`}>
                       <div className="grid grid-cols-[30px_1fr_1fr_110px_40px] gap-4 px-4 py-3 items-center">
-                        <button onClick={() => setExpandedRow(expandedRow === idx ? null : idx)}>
-                          {expandedRow === idx ? <ChevronDown size={14} className="text-slate-600"/> : <ChevronRight size={14} className="text-slate-300"/>}
+                        <button onClick={() => setExpandedRow(expandedRow === realIdx ? null : realIdx)}>
+                          {expandedRow === realIdx ? <ChevronDown size={14} className="text-slate-600"/> : <ChevronRight size={14} className="text-slate-300"/>}
                         </button>
-                        <input value={m.target} onChange={(e) => updateMapping(idx, { target: e.target.value })} onClick={() => openSidebar("target", idx)} className="w-full text-xs font-mono border border-transparent hover:border-slate-200 focus:border-blue-400 rounded px-2 py-1 bg-transparent focus:bg-white cursor-pointer transition-all" placeholder="click..."/>
+                        <input value={m.target} onChange={(e) => updateMapping(realIdx, { target: e.target.value })} onClick={() => openSidebar("target", realIdx)} className="w-full text-xs font-mono border border-transparent hover:border-slate-200 focus:border-blue-400 rounded px-2 py-1 bg-transparent focus:bg-white cursor-pointer transition-all" placeholder="click..."/>
                         <div className="text-[10px] font-mono text-slate-500 truncate px-2 py-1 bg-slate-100/50 rounded border border-slate-100">{Plugin ? Plugin.generate(m) : "Invalid"}</div>
-                        <select value={m.transformation} onChange={(e) => updateMapping(idx, { transformation: e.target.value })} className="text-xs border border-slate-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-300 outline-none cursor-pointer">
+                        <select value={m.transformation} onChange={(e) => updateMapping(realIdx, { transformation: e.target.value })} className="text-xs border border-slate-200 rounded px-2 py-1 bg-white focus:ring-1 focus:ring-blue-300 outline-none cursor-pointer">
                           {Object.values(TRANSFORMATION_PLUGINS).map(p => (<option key={p.id} value={p.id}>{p.label}</option>))}
                         </select>
-                        <button onClick={() => deleteMapping(idx)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
+                        <button onClick={() => deleteMapping(realIdx)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={14} /></button>
                       </div>
-                      {expandedRow === idx && Plugin && (
+                      {expandedRow === realIdx && Plugin && (
                         <div className="px-12 py-4 bg-slate-50/80 border-t border-slate-100 shadow-inner">
                           <div className="bg-white border border-slate-200 rounded-lg p-5 max-w-3xl shadow-sm">
-                            <Plugin.Editor mapping={m} onChange={(updates) => updateMapping(idx, updates)} onOpenSidebar={(mode, field) => openSidebar(mode, idx, field)}/>
+                            <Plugin.Editor mapping={m} onChange={(updates) => updateMapping(realIdx, updates)} onOpenSidebar={(mode, field) => openSidebar(mode, realIdx, field)}/>
                           </div>
                         </div>
                       )}
