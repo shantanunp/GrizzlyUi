@@ -543,9 +543,10 @@ const FieldTree = ({ fields, title, accent }) => {
   );
 };
 
-const FieldBrowserSidebar = ({ fields, title, onClose, onSelect }) => {
+const FieldBrowserSidebar = ({ fields, title, onClose, onSelect, usedFields = [] }) => {
   const [search, setSearch] = useState("");
   const filtered = fields.filter(f => f.path.toLowerCase().includes(search.toLowerCase()));
+  const usedSet = new Set(usedFields);
 
   return (
     <div className="w-80 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden flex flex-col" style={{maxHeight: "600px"}}>
@@ -562,22 +563,24 @@ const FieldBrowserSidebar = ({ fields, title, onClose, onSelect }) => {
       <div className="flex-1 overflow-y-auto p-2">
         {filtered.map(f => {
           const isObject = f.type === "object";
-          const indent = (f.depth || 0) * 12;
+          const indent = (f.depth || 0) * 16;
           const fieldName = f.path.split(".").pop();
+          const isUsed = usedSet.has(f.path);
 
           if (isObject) {
             return (
-              <div key={f.path} className="w-full text-left px-3 py-1.5 text-xs font-mono text-slate-400 flex items-center gap-2" style={{ paddingLeft: `${12 + indent}px` }}>
-                <Type size={12} className="text-slate-300"/>
-                <span>{fieldName}</span>
+              <div key={f.path} className="w-full text-left px-3 py-1.5 text-xs font-mono text-slate-400" style={{ paddingLeft: `${12 + indent}px` }}>
+                {fieldName}
               </div>
             );
           }
 
           return (
-            <button key={f.path} onClick={() => onSelect(f.path)} className="w-full text-left px-3 py-2 text-xs font-mono hover:bg-blue-50 rounded-md text-slate-600 hover:text-blue-600 transition-colors flex items-center gap-2" style={{ paddingLeft: `${12 + indent}px` }}>
-              <Database size={12} className="text-blue-400"/>
-              <span className="flex-1">{fieldName}</span>
+            <button key={f.path} onClick={() => onSelect(f.path)} className={`w-full text-left px-3 py-2 text-xs font-mono rounded-md transition-colors flex items-center justify-between ${isUsed ? "bg-green-50 text-green-700" : "hover:bg-blue-50 text-slate-600 hover:text-blue-600"}`} style={{ paddingLeft: `${12 + indent}px` }}>
+              <span className="flex items-center gap-2">
+                {fieldName}
+                {isUsed && <CheckCircle2 size={12} className="text-green-500"/>}
+              </span>
               <span className="text-[9px] text-slate-300">{f.type}</span>
             </button>
           );
@@ -1077,11 +1080,12 @@ export default function GrizzlyMapper() {
                   }}
                 />
               ) : (
-                <FieldBrowserSidebar 
+                <FieldBrowserSidebar
                   fields={sidebarState.mode === "target" ? outputFields : inputFields}
                   title={sidebarState.mode === "target" ? "Select Target" : "Select Source"}
                   onClose={() => setSidebarState({ ...sidebarState, isOpen: false })}
                   onSelect={handleSidebarSelect}
+                  usedFields={mappings.filter(m => m.type === "field").map(m => sidebarState.mode === "target" ? m.target : m.source).filter(Boolean)}
                 />
               )
             )}
