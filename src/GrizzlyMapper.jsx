@@ -590,11 +590,12 @@ const FieldBrowserSidebar = ({ fields, title, onClose, onSelect, usedFields = []
   );
 };
 
-const ModuleBrowserSidebar = ({ modules, activeModule, onClose, onSelect }) => {
+const ModuleBrowserSidebar = ({ modules, activeModule, onClose, onSelect, usedModules = [] }) => {
   const [search, setSearch] = useState("");
   const availableModules = modules.filter((m, idx) => idx !== activeModule && m.name !== "main");
   const filtered = availableModules.filter(m => m.name.toLowerCase().includes(search.toLowerCase()));
-  
+  const usedSet = new Set(usedModules);
+
   return (
     <div className="w-80 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden flex flex-col" style={{maxHeight: "600px"}}>
       <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50">
@@ -614,15 +615,21 @@ const ModuleBrowserSidebar = ({ modules, activeModule, onClose, onSelect }) => {
             <div className="text-xs">No other modules available</div>
           </div>
         ) : (
-          filtered.map(m => (
-            <button key={m.id} onClick={() => onSelect(m.name)} className="w-full text-left px-3 py-2 text-xs hover:bg-amber-50 rounded-md text-slate-700 hover:text-amber-700 transition-colors flex items-center gap-2 border border-transparent hover:border-amber-200">
-              <Layers size={14} className="text-amber-600"/>
-              <div className="flex-1">
-                <div className="font-semibold font-mono">{m.name}</div>
-                <div className="text-[10px] text-slate-400">{m.mappings.length} mappings</div>
-              </div>
-            </button>
-          ))
+          filtered.map(m => {
+            const isUsed = usedSet.has(m.name);
+            return (
+              <button key={m.id} onClick={() => onSelect(m.name)} className={`w-full text-left px-3 py-2 text-xs rounded-md transition-colors flex items-center gap-2 border ${isUsed ? "bg-green-50 text-green-700 border-green-200" : "hover:bg-amber-50 text-slate-700 hover:text-amber-700 border-transparent hover:border-amber-200"}`}>
+                <Layers size={14} className={isUsed ? "text-green-600" : "text-amber-600"}/>
+                <div className="flex-1">
+                  <div className="font-semibold font-mono flex items-center gap-2">
+                    {m.name}
+                    {isUsed && <CheckCircle2 size={12} className="text-green-500"/>}
+                  </div>
+                  <div className="text-[10px] text-slate-400">{m.mappings.length} mappings</div>
+                </div>
+              </button>
+            );
+          })
         )}
       </div>
     </div>
@@ -1078,6 +1085,7 @@ export default function GrizzlyMapper() {
                     }
                     setSidebarState({ ...sidebarState, isOpen: false });
                   }}
+                  usedModules={modules.flatMap(mod => mod.mappings.filter(m => m.type === "module_call").map(m => m.moduleName)).filter(Boolean)}
                 />
               ) : (
                 <FieldBrowserSidebar
@@ -1085,7 +1093,7 @@ export default function GrizzlyMapper() {
                   title={sidebarState.mode === "target" ? "Select Target" : "Select Source"}
                   onClose={() => setSidebarState({ ...sidebarState, isOpen: false })}
                   onSelect={handleSidebarSelect}
-                  usedFields={mappings.filter(m => m.type === "field").map(m => sidebarState.mode === "target" ? m.target : m.source).filter(Boolean)}
+                  usedFields={modules.flatMap(mod => mod.mappings.filter(m => m.type === "field").map(m => sidebarState.mode === "target" ? m.target : m.source)).filter(Boolean)}
                 />
               )
             )}
