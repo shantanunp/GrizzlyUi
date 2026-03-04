@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers } from 'lucide-react';
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -281,13 +281,13 @@ const GrizzlyMappingTool = () => {
   const outputPaths = buildSchemaPathsList(outputSchema, 'output.', false);
   const allPaths = [...inputPaths, ...outputPaths];
 
-  // Expand both schema trees (call when entering step 2)
+  // Expand both schema trees when entering step 2 (sync after DOM so roots stay expanded)
   const expandBothTrees = () => {
     setExpandedNodes(getAllExpandedIds(inputSchema, outputSchema));
   };
 
-  // When step becomes 2, expand trees (ensures expansion after mount)
-  useEffect(() => {
+  // Run synchronously when step becomes 2 so trees are expanded before first paint
+  useLayoutEffect(() => {
     if (step === 2) {
       setExpandedNodes(getAllExpandedIds(inputSchema, outputSchema));
     }
@@ -446,7 +446,7 @@ const GrizzlyMappingTool = () => {
 
   // Render schema tree
   const renderSchemaNode = (name, schema, path, isInput = true, searchTerm = '') => {
-    const nodeId = `${isInput ? 'input' : 'output'}-${path}`;
+    const nodeId = path ? `${isInput ? 'input' : 'output'}-${path}` : (isInput ? 'input' : 'output');
     const isExpanded = expandedNodes.has(nodeId);
     const fullPath = path ? `${isInput ? 'input' : 'output'}.${path}` : (isInput ? 'input' : 'output');
     
