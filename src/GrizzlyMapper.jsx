@@ -1368,26 +1368,34 @@ const GrizzlyMappingTool = () => {
 
       {step === 2 && (
     <div className="flex h-[calc(100vh-4rem)] bg-gray-100">
-      {/* Left - Input tree (unchanged real estate) */}
+      {/* Left - Output schema */}
       <div className="w-80 bg-white border-r border-gray-200 flex flex-col shrink-0">
         <div className="p-4 border-b border-gray-200">
-          <h2 className="text-lg font-bold text-gray-900 mb-3">Input</h2>
+          <h2 className="text-lg font-bold text-gray-900 mb-3">Output</h2>
           <div className="relative">
             <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
             <input
               type="text"
-              placeholder="Search..."
-              value={inputSearchTerm}
-              onChange={(e) => setInputSearchTerm(e.target.value)}
+              placeholder="Search fields..."
+              value={outputSearchTerm}
+              onChange={(e) => setOutputSearchTerm(e.target.value)}
               className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-gray-400 text-sm"
             />
-            {inputSearchTerm && (
-              <button onClick={() => setInputSearchTerm('')} className="absolute right-2 top-2.5 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+            {outputSearchTerm && (
+              <button
+                onClick={() => setOutputSearchTerm('')}
+                className="absolute right-2 top-2.5 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
             )}
+          </div>
+          <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+            💡 Drag or double-click fields
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
-          {renderSchemaNode('root', inputSchema, '', true, inputSearchTerm)}
+          {renderSchemaNode('root', outputSchema, '', false, outputSearchTerm)}
         </div>
       </div>
 
@@ -1464,34 +1472,26 @@ const GrizzlyMappingTool = () => {
         </div>
       </div>
 
-      {/* Right Sidebar - Output Schema */}
+      {/* Right - Input schema */}
       <div className="w-80 bg-white border-l border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200">
-          <h2 className="text-lg font-bold text-gray-900 mb-3">Output Schema</h2>
+          <h2 className="text-lg font-bold text-gray-900 mb-3">Input</h2>
           <div className="relative">
             <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
             <input
               type="text"
-              placeholder="Search fields..."
-              value={outputSearchTerm}
-              onChange={(e) => setOutputSearchTerm(e.target.value)}
+              placeholder="Search..."
+              value={inputSearchTerm}
+              onChange={(e) => setInputSearchTerm(e.target.value)}
               className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-gray-400 text-sm"
             />
-            {outputSearchTerm && (
-              <button
-                onClick={() => setOutputSearchTerm('')}
-                className="absolute right-2 top-2.5 text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
+            {inputSearchTerm && (
+              <button onClick={() => setInputSearchTerm('')} className="absolute right-2 top-2.5 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
             )}
-          </div>
-          <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-            💡 Drag or double-click fields
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
-          {renderSchemaNode('root', outputSchema, '', false, outputSearchTerm)}
+          {renderSchemaNode('root', inputSchema, '', true, inputSearchTerm)}
         </div>
       </div>
 
