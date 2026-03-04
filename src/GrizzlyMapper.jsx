@@ -129,6 +129,43 @@ const parseTemplate = (pythonCode) => {
   return modules.length ? modules : [{ id: uid(), name: 'main', mappings: [] }];
 };
 
+// Flatten all mapping items from all modules (recursive) for diffing
+const flattenMappings = (modules) => {
+  const out = [];
+  const walk = (items, moduleName) => {
+    if (!items) return;
+    items.forEach((item) => {
+      out.push({ moduleName, item });
+      if (item.children?.length) walk(item.children, moduleName);
+      if (item.elifBlocks) item.elifBlocks.forEach((eb) => walk(eb.children, moduleName));
+      if (item.elseBlock?.children?.length) walk(item.elseBlock.children, moduleName);
+    });
+  };
+  modules.forEach((mod) => walk(mod.mappings || [], mod.name));
+  return out;
+};
+
+// Signature for change detection (type + main fields only)
+const getItemSignature = (item) => {
+  if (!item) return '';
+  const base = { type: item.type };
+  if (item.type === 'assignment') return JSON.stringify({ ...base, target: item.target, expression: item.expression });
+  if (item.type === 'module_call') return JSON.stringify({ ...base, moduleName: item.moduleName });
+  if (item.type === 'if') return JSON.stringify({ ...base, condition: item.condition });
+  if (item.type === 'for') return JSON.stringify({ ...base, iterator: item.iterator, iterable: item.iterable });
+  return JSON.stringify(base);
+};
+
+// Describe a mapping item in one line for dashboard
+const describeItem = (item) => {
+  if (!item) return '';
+  if (item.type === 'assignment') return `${item.target || '?'} ← ${(item.expression || '').slice(0, 40)}${(item.expression || '').length > 40 ? '…' : ''}`;
+  if (item.type === 'module_call') return `call ${item.moduleName || '?'}`;
+  if (item.type === 'if') return `if (${(item.condition || '').slice(0, 50)}${(item.condition || '').length > 50 ? '…' : ''})`;
+  if (item.type === 'for') return `for ${item.iterator || '?'} in ${(item.iterable || '').slice(0, 30)}${(item.iterable || '').length > 30 ? '…' : ''}`;
+  return item.type || 'mapping';
+};
+
 const GrizzlyMappingTool = () => {
   const [step, setStep] = useState(1);
   const [inputSchema, setInputSchema] = useState(defaultInputSchema);
@@ -136,6 +173,7 @@ const GrizzlyMappingTool = () => {
   const [inputFileName, setInputFileName] = useState('');
   const [outputFileName, setOutputFileName] = useState('');
   const [templateFileName, setTemplateFileName] = useState('');
+  const [baselineModules, setBaselineModules] = useState(null);
   const [modules, setModules] = useState([{ id: uid(), name: 'main', mappings: [] }]);
   const [activeModule, setActiveModule] = useState(0);
 
@@ -242,7 +280,8 @@ const GrizzlyMappingTool = () => {
   };
 
   // Handle double click on schema node
-  const handleSchemaDoubleClick = (path, isInput) => {
+  const handleSchemaDoubleClick = (path, isInput, e) => {
+    if (e) e.stopPropagation();
     if (!selectedInput) return;
 
     const { id, field } = selectedInput;
@@ -250,6 +289,7 @@ const GrizzlyMappingTool = () => {
     // Determine if the path is appropriate for the field
     if (field === 'target' && isInput) return; // Target should be from output
     if (field === 'expression' && !isInput) return; // Expression should be from input
+    if ((field === 'condition' || field === 'iterable') && !isInput) return; // Condition/iterable use input paths
 
     // Update the item
     if (field === 'expression') {
@@ -310,7 +350,9 @@ const GrizzlyMappingTool = () => {
     const lastWord = textBeforeCursor.split(/[\s+\-*/(),[\]{}]/).pop() || '';
 
     if (lastWord.length >= 1) {
-      const suggestions = allPaths.filter(p => 
+      // Target field = output paths only; expression / condition / iterable = input paths only
+      const pathSource = field === 'target' ? outputPaths : inputPaths;
+      const suggestions = pathSource.filter(p =>
         p.path.toLowerCase().includes(lastWord.toLowerCase())
       ).slice(0, 10);
 
@@ -400,9 +442,9 @@ const GrizzlyMappingTool = () => {
       }
     };
 
-    const handleDoubleClick = () => {
+    const handleDoubleClick = (ev) => {
       if (schema.type !== 'object' || !schema.properties) {
-        handleSchemaDoubleClick(fullPath, isInput);
+        handleSchemaDoubleClick(fullPath, isInput, ev);
       }
     };
 
@@ -1237,6 +1279,36 @@ const GrizzlyMappingTool = () => {
 
   const step2OrderedMappings = [...mappings.filter(m => m.type === 'module_call'), ...mappings.filter(m => m.type !== 'module_call')];
 
+  // Changes dashboard: compare current modules to baseline (set when entering step 2)
+  const mappingChanges = (() => {
+    if (!baselineModules || step !== 3) return { added: [], deleted: [], changed: [] };
+    const baseFlat = flattenMappings(baselineModules);
+    const currFlat = flattenMappings(modules);
+    const byId = (list) => {
+      const m = new Map();
+      list.forEach(({ moduleName, item }) => m.set(item.id, { moduleName, item }));
+      return m;
+    };
+    const baseMap = byId(baseFlat);
+    const currMap = byId(currFlat);
+    const added = [];
+    const deleted = [];
+    const changed = [];
+    currMap.forEach((curr, id) => {
+      if (!baseMap.has(id)) added.push(curr);
+      else if (getItemSignature(baseMap.get(id).item) !== getItemSignature(curr.item)) changed.push({ before: baseMap.get(id), after: curr });
+    });
+    baseMap.forEach((base, id) => {
+      if (!currMap.has(id)) deleted.push(base);
+    });
+    return { added, deleted, changed };
+  })();
+
+  const goToStep2 = () => {
+    setBaselineModules(JSON.parse(JSON.stringify(modules)));
+    setStep(2);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center sticky top-0 z-10">
@@ -1245,7 +1317,7 @@ const GrizzlyMappingTool = () => {
           <span className="font-bold text-slate-800">Grizzly</span>
         </div>
         <div className="flex gap-2">
-          {[1, 2, 3].map(n => (
+          {[1, 2, 3, 4].map(n => (
             <span key={n} className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${step === n ? 'bg-slate-700 text-white' : 'bg-slate-200 text-slate-500'}`}>{n}</span>
           ))}
         </div>
@@ -1287,7 +1359,7 @@ const GrizzlyMappingTool = () => {
             </label>
           </div>
           <div className="flex justify-end">
-            <button onClick={() => setStep(2)} className="px-6 py-2 bg-slate-700 text-white rounded-lg font-medium flex items-center gap-2">
+            <button onClick={goToStep2} className="px-6 py-2 bg-slate-700 text-white rounded-lg font-medium flex items-center gap-2">
               Next <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -1353,7 +1425,7 @@ const GrizzlyMappingTool = () => {
                 onClick={() => setStep(3)}
                 className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm"
               >
-                <Code className="w-4 h-4" /> Review &amp; Generate
+                <Layers className="w-4 h-4" /> Review changes
               </button>
             </div>
 
@@ -1451,10 +1523,92 @@ const GrizzlyMappingTool = () => {
 
       {step === 3 && (
         <div className="max-w-4xl mx-auto p-6">
-          <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Export</h1>
-          <pre className="bg-slate-100 p-4 rounded-lg text-xs overflow-auto max-h-96 mb-4 font-mono whitespace-pre">{generateCode()}</pre>
+          <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Review changes</h1>
+          <p className="text-sm text-slate-600 mb-6">Summary of mappings added, deleted, or changed since you started editing.</p>
+
+          <div className="grid grid-cols-3 gap-4 mb-6">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+              <div className="text-2xl font-bold text-emerald-700">{mappingChanges.added.length}</div>
+              <div className="text-sm text-emerald-600">Added</div>
+            </div>
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+              <div className="text-2xl font-bold text-red-700">{mappingChanges.deleted.length}</div>
+              <div className="text-sm text-red-600">Deleted</div>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <div className="text-2xl font-bold text-amber-700">{mappingChanges.changed.length}</div>
+              <div className="text-sm text-amber-600">Changed</div>
+            </div>
+          </div>
+
+          <div className="space-y-6 mb-6">
+            {mappingChanges.added.length > 0 && (
+              <section>
+                <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" /> Added mappings
+                </h2>
+                <ul className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+                  {mappingChanges.added.map(({ moduleName, item }) => (
+                    <li key={item.id} className="px-4 py-2 text-sm flex items-center gap-2">
+                      <span className="text-slate-500 font-medium shrink-0">[{moduleName}]</span>
+                      <span className="font-mono text-slate-800">{describeItem(item)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {mappingChanges.deleted.length > 0 && (
+              <section>
+                <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-red-500" /> Deleted mappings
+                </h2>
+                <ul className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+                  {mappingChanges.deleted.map(({ moduleName, item }) => (
+                    <li key={item.id} className="px-4 py-2 text-sm flex items-center gap-2 text-slate-600">
+                      <span className="text-slate-500 font-medium shrink-0">[{moduleName}]</span>
+                      <span className="font-mono line-through">{describeItem(item)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {mappingChanges.changed.length > 0 && (
+              <section>
+                <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-500" /> Changed mappings
+                </h2>
+                <ul className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100">
+                  {mappingChanges.changed.map(({ after }) => (
+                    <li key={after.item.id} className="px-4 py-2 text-sm">
+                      <span className="text-slate-500 font-medium">[{after.moduleName}]</span>
+                      <span className="font-mono text-slate-800">{describeItem(after.item)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {mappingChanges.added.length === 0 && mappingChanges.deleted.length === 0 && mappingChanges.changed.length === 0 && (
+              <p className="text-slate-500 text-sm py-4">No mapping changes since you started. Add, remove, or edit mappings in Step 2 and return here to see the summary.</p>
+            )}
+          </div>
+
           <div className="flex gap-4">
             <button onClick={() => setStep(2)} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
+              <ArrowLeft className="w-4 h-4" /> Back to mapping
+            </button>
+            <button onClick={() => setStep(4)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2">
+              <Code className="w-4 h-4" /> Continue to generate
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 4 && (
+        <div className="max-w-4xl mx-auto p-6">
+          <h1 className="text-xl font-bold text-slate-800 mb-4">Step 4: Export</h1>
+          <pre className="bg-slate-100 p-4 rounded-lg text-xs overflow-auto max-h-96 mb-4 font-mono whitespace-pre">{generateCode()}</pre>
+          <div className="flex gap-4">
+            <button onClick={() => setStep(3)} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
               <ArrowLeft className="w-4 h-4" /> Back
             </button>
             <button
