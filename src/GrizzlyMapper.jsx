@@ -166,6 +166,30 @@ const describeItem = (item) => {
   return item.type || 'mapping';
 };
 
+// Collect all expandable node IDs from a schema (same path logic as renderSchemaNode)
+const collectExpandableNodeIds = (schema, path, isInput) => {
+  const prefix = isInput ? 'input' : 'output';
+  const nodeId = path ? `${prefix}-${path}` : prefix;
+  const ids = [];
+  if (schema?.type === 'object' && schema.properties) {
+    ids.push(nodeId);
+    Object.entries(schema.properties).forEach(([key, value]) => {
+      ids.push(...collectExpandableNodeIds(value, path ? `${path}.${key}` : key, isInput));
+    });
+  } else if (schema?.type === 'array' && schema.items) {
+    ids.push(nodeId);
+    ids.push(...collectExpandableNodeIds(schema.items, `${path || ''}[*]`, isInput));
+  }
+  return ids;
+};
+
+// Ensure roots and all nodes are in the set (roots use path '' -> 'input' / 'output')
+const getAllExpandedIds = (inputSchema, outputSchema) => {
+  const inputIds = collectExpandableNodeIds(inputSchema, '', true);
+  const outputIds = collectExpandableNodeIds(outputSchema, '', false);
+  return new Set(['input', 'output', ...inputIds, ...outputIds]);
+};
+
 const GrizzlyMappingTool = () => {
   const [step, setStep] = useState(1);
   const [inputSchema, setInputSchema] = useState(defaultInputSchema);
@@ -256,6 +280,18 @@ const GrizzlyMappingTool = () => {
   const inputPaths = buildSchemaPathsList(inputSchema, 'input.', true);
   const outputPaths = buildSchemaPathsList(outputSchema, 'output.', false);
   const allPaths = [...inputPaths, ...outputPaths];
+
+  // Expand both schema trees (call when entering step 2)
+  const expandBothTrees = () => {
+    setExpandedNodes(getAllExpandedIds(inputSchema, outputSchema));
+  };
+
+  // When step becomes 2, expand trees (ensures expansion after mount)
+  useEffect(() => {
+    if (step === 2) {
+      setExpandedNodes(getAllExpandedIds(inputSchema, outputSchema));
+    }
+  }, [step, inputSchema, outputSchema]);
 
   // Toggle schema node expansion
   const toggleNode = (nodeId) => {
@@ -477,7 +513,7 @@ const GrizzlyMappingTool = () => {
             onClick={() => toggleNode(nodeId)}
           >
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <Database className="w-4 h-4 text-green-600" />
+            <Folder className="w-4 h-4 text-blue-600" />
             <span className="text-sm font-medium">{name}</span>
             <span className="text-xs text-gray-500 ml-auto">array</span>
           </div>
@@ -505,7 +541,7 @@ const GrizzlyMappingTool = () => {
           }`}
           title="Double-click to insert into selected field"
         >
-          <File className="w-4 h-4 text-purple-600" />
+          <File className="w-4 h-4 text-slate-600" />
           <span className="text-sm">{name}</span>
           <span className="text-xs text-gray-500 ml-auto">{schema.type}</span>
         </div>
@@ -1306,6 +1342,7 @@ const GrizzlyMappingTool = () => {
 
   const goToStep2 = () => {
     setBaselineModules(JSON.parse(JSON.stringify(modules)));
+    expandBothTrees();
     setStep(2);
   };
 
@@ -1593,7 +1630,7 @@ const GrizzlyMappingTool = () => {
           </div>
 
           <div className="flex gap-4">
-            <button onClick={() => setStep(2)} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
+            <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
               <ArrowLeft className="w-4 h-4" /> Back to mapping
             </button>
             <button onClick={() => setStep(4)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2">
