@@ -105,20 +105,34 @@ const parseTemplate = (pythonCode) => {
       modules.push(currentModule);
       return;
     }
-    const mapDef = trimmed.match(/^def map_(\w+)\(INPUT, OUTPUT\):/);
+    // Support both camelCase (mapCollateral) and snake_case (map_collateral)
+    const mapDefCamel = trimmed.match(/^def map([A-Z]\w*)\(INPUT, OUTPUT\):/);
+    const mapDefSnake = trimmed.match(/^def map_(\w+)\(INPUT, OUTPUT\):/);
+    const mapDef = mapDefCamel || mapDefSnake;
     if (mapDef) {
-      currentModule = { id: uid(), name: mapDef[1], mappings: [] };
+      // Normalise to camelCase-lowercase name for internal storage
+      let rawName = mapDef[1];
+      // If snake_case, keep as-is; if PascalCase (from camelCase def), lower-camelCase it
+      if (mapDefCamel) {
+        rawName = rawName.charAt(0).toLowerCase() + rawName.slice(1);
+      }
+      currentModule = { id: uid(), name: rawName, mappings: [] };
       modules.push(currentModule);
       return;
     }
-    if (trimmed.startsWith('def ') && !trimmed.match(/^def (transform|map_\w+)\(/)) {
+    if (trimmed.startsWith('def ') && !trimmed.match(/^def (transform|map[A-Z_]\w*)\(/)) {
       currentModule = null;
       return;
     }
     if (!currentModule) return;
-    const moduleCallMatch = trimmed.match(/^map_(\w+)\(INPUT, OUTPUT\)/);
+    // Support both call styles
+    const moduleCallCamel = trimmed.match(/^map([A-Z]\w*)\(INPUT, OUTPUT\)/);
+    const moduleCallSnake = trimmed.match(/^map_(\w+)\(INPUT, OUTPUT\)/);
+    const moduleCallMatch = moduleCallCamel || moduleCallSnake;
     if (moduleCallMatch) {
-      currentModule.mappings.push({ id: uid(), type: 'module_call', moduleName: moduleCallMatch[1] });
+      let callName = moduleCallMatch[1];
+      if (moduleCallCamel) callName = callName.charAt(0).toLowerCase() + callName.slice(1);
+      currentModule.mappings.push({ id: uid(), type: 'module_call', moduleName: callName });
       return;
     }
     const assignMatch = trimmed.match(/OUTPUT\["([^"]+)"\]\s*=\s*(.+)/);
@@ -262,6 +276,12 @@ const GrizzlyMappingTool = () => {
           traverse(value, newPath);
         });
       } else if (obj.type === 'array' && obj.items) {
+        // Include the array node itself so it can be used as an iterable
+        paths.push({
+          path: prefix + (path || ''),
+          type: 'array',
+          isInput
+        });
         traverse(obj.items, `${path}[*]`);
       } else {
         // Leaf node
@@ -388,9 +408,19 @@ const GrizzlyMappingTool = () => {
     if (lastWord.length >= 1) {
       // Target field = output paths only; expression / condition / iterable = input paths only
       const pathSource = field === 'target' ? outputPaths : inputPaths;
-      const suggestions = pathSource.filter(p =>
+      let suggestions = pathSource.filter(p =>
         p.path.toLowerCase().includes(lastWord.toLowerCase())
-      ).slice(0, 10);
+      );
+
+      // For iterable: sort array-type paths to the top
+      if (field === 'iterable') {
+        suggestions = [
+          ...suggestions.filter(p => p.type === 'array'),
+          ...suggestions.filter(p => p.type !== 'array')
+        ];
+      }
+
+      suggestions = suggestions.slice(0, 10);
 
       if (suggestions.length > 0) {
         setAutocompleteState({
@@ -509,11 +539,26 @@ const GrizzlyMappingTool = () => {
       return (
         <div key={nodeId} className="ml-0">
           <div
-            className="flex items-center gap-2 p-2 hover:bg-gray-100 rounded cursor-pointer"
+            draggable={isInput}
+            onDragStart={isInput ? (e) => {
+              const dragData = { path: fullPath, type: 'array', isInput };
+              e.dataTransfer.setData('application/json', JSON.stringify(dragData));
+              e.dataTransfer.effectAllowed = 'copy';
+            } : undefined}
+            onDoubleClick={isInput ? (ev) => {
+              ev.stopPropagation();
+              if (selectedInput?.field === 'iterable') {
+                updateItem(selectedInput.id, 'iterable', fullPath);
+              }
+            } : undefined}
+            className={`flex items-center gap-2 p-2 hover:bg-gray-100 rounded ${isInput ? 'cursor-move' : 'cursor-pointer'} ${
+              selectedInput?.field === 'iterable' && isInput ? 'bg-green-50 ring-1 ring-green-300' : ''
+            }`}
             onClick={() => toggleNode(nodeId)}
+            title={isInput ? 'Double-click or drag to use as FOR iterable' : undefined}
           >
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <Folder className="w-4 h-4 text-blue-600" />
+            <Database className="w-4 h-4 text-green-600" />
             <span className="text-sm font-medium">{name}</span>
             <span className="text-xs text-gray-500 ml-auto">array</span>
           </div>
@@ -1136,18 +1181,33 @@ const GrizzlyMappingTool = () => {
                 className="w-32 px-3 py-2 border border-green-300 rounded focus:outline-none focus:border-gray-400 text-sm font-mono bg-white"
               />
               <span className="text-green-900 font-semibold">IN</span>
+              <div
+                className="flex-1 relative"
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  try {
+                    const dragData = JSON.parse(e.dataTransfer.getData('application/json'));
+                    if (dragData && dragData.isInput) {
+                      updateItem(item.id, 'iterable', dragData.path);
+                    }
+                  } catch (err) { /* ignore */ }
+                }}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              >
               <input
                 type="text"
-                placeholder="Iterable (e.g., input.items)"
+                placeholder="Drag array field or type (e.g., input.accounts)"
                 value={item.iterable}
                 onFocus={(e) => handleInputFocus(e, item.id, 'iterable')}
                 onChange={(e) => handleInputChange(e, item.id, 'iterable')}
-                className={`flex-1 px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm font-mono ${
+                className={`w-full px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm font-mono ${
                   selectedInput?.id === item.id && selectedInput?.field === 'iterable'
                     ? 'border-green-500 bg-green-200'
                     : 'border-green-300 bg-white'
                 }`}
               />
+              </div>
               <button
                 onClick={() => deleteItem(item.id)}
                 className="p-2 text-red-600 hover:bg-red-50 rounded"
@@ -1228,55 +1288,352 @@ const GrizzlyMappingTool = () => {
 
   const generateCode = () => {
     const lines = [];
+
+    // Convert snake_case or plain name to camelCase function name segment
+    // e.g. "collateral" -> "Collateral", "about_version" -> "AboutVersion"
+    const toCamelFuncName = (name) => {
+      return name
+        .split('_')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join('');
+    };
+
+    // Human-readable docstring title: "aboutVersion" -> "About Version", "collateral" -> "Collateral"
+    const toDocTitle = (name) => {
+      // Split on underscores or camelCase boundaries
+      const words = name
+        .replace(/_/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2');
+      return words
+        .split(' ')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+    };
+
+    // Helper to clean target path (remove 'output.' or 'input.' prefix)
+    const cleanPath = (path) => {
+      if (!path) return '';
+      if (path.startsWith('output.')) return path.substring(7);
+      if (path.startsWith('input.')) return path.substring(6);
+      return path;
+    };
+
+    // Normalise expression: keep INPUT? safe-nav as-is, replace bare 'input.' prefix
+    const cleanExpr = (expr) => {
+      if (!expr) return '""';
+      // Replace 'input.' (case-insensitive, not already INPUT?) with INPUT?.
+      return expr.replace(/\binput\./gi, 'INPUT?.');
+    };
+
+    // ─── Dict / list-comprehension builder ───────────────────────────────────
+
+    // Generate Python dict literal lines at a given indent level.
+    // `obj` is a plain JS object where string values are Python expressions
+    // and nested objects are sub-dicts.  Special key `_directValue` means
+    // the object itself IS that expression.
+    const generateDict = (obj, indent) => {
+      const pre = '    '.repeat(indent);
+      const result = [];
+
+      if (obj._directValue !== undefined) return [obj._directValue];
+
+      const entries = Object.entries(obj).filter(([k]) => k !== '_directValue');
+      if (entries.length === 0) return ['{}'];
+
+      result.push('{');
+      entries.forEach(([key, value], idx) => {
+        const isLast = idx === entries.length - 1;
+        if (typeof value === 'string') {
+          result.push(`${pre}    "${key}": ${value}${isLast ? '' : ','}`);
+        } else if (value && value._listComp) {
+          // List comprehension node produced by buildNestedStructure
+          const compLines = value._listComp;
+          if (compLines.length === 1) {
+            result.push(`${pre}    "${key}": ${compLines[0]}${isLast ? '' : ','}`);
+          } else {
+            result.push(`${pre}    "${key}": ${compLines[0]}`);
+            compLines.slice(1, -1).forEach(l => result.push(`${pre}        ${l}`));
+            result.push(`${pre}        ${compLines[compLines.length - 1]}${isLast ? '' : ','}`);
+          }
+        } else {
+          const childLines = generateDict(value, indent + 1);
+          if (childLines.length === 1) {
+            result.push(`${pre}    "${key}": ${childLines[0]}${isLast ? '' : ','}`);
+          } else {
+            result.push(`${pre}    "${key}": ${childLines[0]}`);
+            childLines.slice(1, -1).forEach(l => result.push(l));
+            result.push(`${childLines[childLines.length - 1]}${isLast ? '' : ','}`);
+          }
+        }
+      });
+      result.push(`${pre}}`);
+      return result;
+    };
+
+    // Build a nested JS object from a flat list of assignments sharing a root key.
+    // Assignments that come from a `for` block are represented as list comprehensions.
+    const buildNestedStructure = (assignments) => {
+      const structure = {};
+
+      assignments.forEach(({ cleanedTarget, expression, _forMeta }) => {
+        const parts = cleanedTarget.split('.');
+        const subParts = parts.slice(1); // strip root key
+
+        if (subParts.length === 0) {
+          structure._directValue = expression;
+          return;
+        }
+
+        let current = structure;
+        for (let i = 0; i < subParts.length - 1; i++) {
+          const part = subParts[i];
+          if (!current[part]) current[part] = {};
+          current = current[part];
+        }
+
+        const lastPart = subParts[subParts.length - 1];
+
+        if (_forMeta) {
+          // Represent as list comprehension: [{ "key": expr } for iter in iterable]
+          current[lastPart] = {
+            _listComp: buildListComp(_forMeta)
+          };
+        } else {
+          current[lastPart] = expression;
+        }
+      });
+
+      return structure;
+    };
+
+    // Build list comprehension lines for a for-block.
+    // _forMeta = { iterator, iterable, children }  where children are assignment items.
+    const buildListComp = ({ iterator, iterable, children }) => {
+      // Collect inner assignments and render the dict body
+      const innerAssignments = collectForChildren(children, iterator);
+      const innerStructure = buildInnerDict(innerAssignments);
+      const dictLines = generateDict(innerStructure, 3); // deep indent for the comp body
+
+      const iterClean = cleanExpr(iterable);
+      const safeIterable = `(${iterClean} or [])`;
+
+      if (dictLines.length === 1) {
+        return [`[${dictLines[0]} for ${iterator} in ${safeIterable}]`];
+      }
+      // Multi-line list comp with hanging indent
+      const result = [`[`];
+      dictLines.forEach(l => result.push(`    ${l}`));
+      result.push(`    for ${iterator} in ${safeIterable}`);
+      result.push(`]`);
+      return result;
+    };
+
+    // Collect assignments from for-loop children and convert paths using iterator var
+    const collectForChildren = (children, iterator) => {
+      const results = [];
+      (children || []).forEach(item => {
+        if (item.type === 'assignment' && item.target) {
+          const cleaned = cleanPath(item.target);
+          // Replace leading iterator prefix in expression paths
+          const expr = cleanExpr(item.expression || '""');
+          results.push({ cleanedTarget: cleaned, expression: expr });
+        }
+      });
+      return results;
+    };
+
+    // Build inner dict structure for list-comp body (no root key stripping)
+    const buildInnerDict = (assignments) => {
+      const structure = {};
+      assignments.forEach(({ cleanedTarget, expression }) => {
+        const parts = cleanedTarget.split('.');
+        let current = structure;
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!current[parts[i]]) current[parts[i]] = {};
+          current = current[parts[i]];
+        }
+        current[parts[parts.length - 1]] = expression;
+      });
+      return structure;
+    };
+
+    // ─── Group consecutive assignments by root key ────────────────────────────
+
+    const groupAssignmentsByRoot = (items) => {
+      const groups = [];
+      let currentGroup = null;
+
+      items.forEach(item => {
+        if (item.type === 'assignment' && item.target) {
+          const cleanedTarget = cleanPath(item.target);
+          const rootKey = cleanedTarget.split('.')[0];
+
+          if (!currentGroup || currentGroup.rootKey !== rootKey) {
+            if (currentGroup) groups.push(currentGroup);
+            currentGroup = { rootKey, assignments: [] };
+          }
+          currentGroup.assignments.push({ ...item, cleanedTarget, expression: cleanExpr(item.expression) });
+
+        } else if (item.type === 'for' && item.children && item.children.length > 0) {
+          // Peek: does this for-loop feed a single root OUTPUT key via its children?
+          const childAssignments = item.children.filter(c => c.type === 'assignment' && c.target);
+          if (childAssignments.length > 0) {
+            const rootKey = cleanPath(childAssignments[0].target).split('.')[0];
+            const allSameRoot = childAssignments.every(c => cleanPath(c.target).split('.')[0] === rootKey);
+
+            if (allSameRoot) {
+              // Merge into current group or start new one targeting rootKey
+              if (!currentGroup || currentGroup.rootKey !== rootKey) {
+                if (currentGroup) groups.push(currentGroup);
+                currentGroup = { rootKey, assignments: [] };
+              }
+              currentGroup.assignments.push({
+                type: 'assignment',
+                cleanedTarget: `${rootKey}.__listComp__`,
+                expression: '',
+                _forMeta: { iterator: item.iterator, iterable: item.iterable, children: item.children }
+              });
+              return;
+            }
+          }
+          // Fall through: emit as standalone for-loop
+          if (currentGroup) { groups.push(currentGroup); currentGroup = null; }
+          groups.push({ rootKey: null, item });
+
+        } else {
+          if (currentGroup) { groups.push(currentGroup); currentGroup = null; }
+          groups.push({ rootKey: null, item });
+        }
+      });
+
+      if (currentGroup) groups.push(currentGroup);
+      return groups;
+    };
+
+    // ─── Emit lines ───────────────────────────────────────────────────────────
+
     const emitLines = (items, indent) => {
       const pre = '    '.repeat(indent);
-      (items || []).forEach(m => {
-        if (m.type === 'module_call' && m.moduleName) {
-          lines.push(`${pre}map_${m.moduleName}(INPUT, OUTPUT)`);
-          return;
-        }
-        if (m.type === 'assignment' && m.target) {
-          const expr = m.expression || '';
-          lines.push(`${pre}OUTPUT["${m.target}"] = ${expr}`);
-          return;
-        }
-        if (m.type === 'if') {
-          lines.push(`${pre}if ${m.condition || 'False'}:`);
-          emitLines(m.children, indent + 1);
-          (m.elifBlocks || []).forEach(eb => {
-            lines.push(`${pre}elif ${eb.condition || 'False'}:`);
-            emitLines(eb.children, indent + 1);
-          });
-          if (m.elseBlock) {
-            lines.push(`${pre}else:`);
-            emitLines(m.elseBlock.children, indent + 1);
+      const groups = groupAssignmentsByRoot(items);
+
+      groups.forEach(group => {
+        if (group.item) {
+          emitSingleItem(group.item, indent);
+        } else if (group.assignments && group.assignments.length > 0) {
+          const { rootKey, assignments } = group;
+
+          // Single direct assignment (no nesting)
+          if (assignments.length === 1 && !assignments[0].cleanedTarget.includes('.') && !assignments[0]._forMeta) {
+            lines.push(`${pre}OUTPUT["${rootKey}"] = ${assignments[0].expression}`);
+            return;
           }
-          return;
-        }
-        if (m.type === 'for') {
-          lines.push(`${pre}for ${m.iterator || 'item'} in ${m.iterable || ''}:`);
-          emitLines(m.children, indent + 1);
+
+          // For-loop → list comprehension hoisted to OUTPUT["key"] = [...]
+          if (assignments.length === 1 && assignments[0]._forMeta) {
+            const listLines = buildListComp(assignments[0]._forMeta);
+
+            // Emit iterable variable declaration before the assignment
+            const { iterator, iterable } = assignments[0]._forMeta;
+            const iterVarName = `${iterator}_list`;
+            lines.push(`${pre}${iterVarName} = ${cleanExpr(iterable)}`);
+            lines.push('');
+
+            // Rebuild list comp using the named variable
+            const safeIterable = `(${iterVarName} or [])`;
+            const innerAssignments = collectForChildren(assignments[0]._forMeta.children, iterator);
+            const innerStructure = buildInnerDict(innerAssignments);
+            const dictLines = generateDict(innerStructure, indent + 2);
+
+            if (dictLines.length === 1) {
+              lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
+              lines.push(`${pre}    "${rootKey}": [${dictLines[0]} for ${iterator} in ${safeIterable}]`);
+              lines.push(`${pre}}`);
+            } else {
+              lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
+              lines.push(`${pre}    "${rootKey}": [`);
+              lines.push(`${pre}        {`);
+              dictLines.forEach(l => lines.push(`${pre}        ${l}`));
+              lines.push(`${pre}        for ${iterator} in ${safeIterable}`);
+              lines.push(`${pre}    ]`);
+              lines.push(`${pre}}`);
+            }
+            return;
+          }
+
+          // Nested assignments → declarative dict
+          const structure = buildNestedStructure(assignments);
+          const dictLines = generateDict(structure, indent);
+
+          if (dictLines.length === 1) {
+            lines.push(`${pre}OUTPUT["${rootKey}"] = ${dictLines[0]}`);
+          } else {
+            lines.push(`${pre}OUTPUT["${rootKey}"] = ${dictLines[0]}`);
+            dictLines.slice(1).forEach(l => lines.push(l));
+          }
         }
       });
     };
+
+    const emitSingleItem = (m, indent) => {
+      const pre = '    '.repeat(indent);
+
+      if (m.type === 'module_call' && m.moduleName) {
+        lines.push(`${pre}map${toCamelFuncName(m.moduleName)}(INPUT, OUTPUT)`);
+        return;
+      }
+
+      if (m.type === 'assignment' && m.target) {
+        const cleaned = cleanPath(m.target);
+        lines.push(`${pre}OUTPUT["${cleaned}"] = ${cleanExpr(m.expression)}`);
+        return;
+      }
+
+      if (m.type === 'if') {
+        lines.push(`${pre}if ${m.condition || 'False'}:`);
+        emitLines(m.children || [], indent + 1);
+        (m.elifBlocks || []).forEach(eb => {
+          lines.push(`${pre}elif ${eb.condition || 'False'}:`);
+          emitLines(eb.children || [], indent + 1);
+        });
+        if (m.elseBlock) {
+          lines.push(`${pre}else:`);
+          emitLines(m.elseBlock.children || [], indent + 1);
+        }
+        return;
+      }
+
+      if (m.type === 'for') {
+        lines.push(`${pre}for ${m.iterator || 'item'} in ${cleanExpr(m.iterable || '')}:`);
+        emitLines(m.children || [], indent + 1);
+      }
+    };
+
+    // ─── Top-level emission ───────────────────────────────────────────────────
+
     lines.push('#!/usr/bin/env python3');
     lines.push('# GRIZZLY_TEMPLATE_V1');
     lines.push('"""Generated by Grizzly"""');
     lines.push('');
+
     modules.filter(m => m.name !== 'main' && m.mappings.length > 0).forEach(mod => {
-      lines.push(`def map_${mod.name}(INPUT, OUTPUT):`);
-      lines.push(`    """${mod.name}"""`);
+      const funcName = `map${toCamelFuncName(mod.name)}`;
+      const docTitle = `Map ${toDocTitle(mod.name)}`;
+      lines.push(`def ${funcName}(INPUT, OUTPUT):`);
+      lines.push(`    """${docTitle}"""`);
       emitLines(mod.mappings, 1);
       lines.push('');
+      lines.push('');
     });
+
     const main = modules.find(m => m.name === 'main');
     if (main) {
       lines.push('def transform(INPUT):');
-      lines.push('    """Main"""');
+      lines.push('    """Transform"""');
       lines.push('    OUTPUT = {}');
       emitLines(main.mappings, 1);
       lines.push('    return OUTPUT');
     }
+
     return lines.join('\n');
   };
 
