@@ -869,6 +869,36 @@ const GrizzlyMappingTool = () => {
     updateModuleMappings(activeModule,updateInItems(mappings));
   };
 
+  const deleteElif = (ifBlockId, elifIdx) => {
+    const updateInItems = (items) => {
+      return items.map(item => {
+        if (item.id === ifBlockId && item.type === 'if') {
+          return { ...item, elifBlocks: item.elifBlocks.filter((_, i) => i !== elifIdx) };
+        }
+        if (item.children) return { ...item, children: updateInItems(item.children) };
+        if (item.elifBlocks) return { ...item, elifBlocks: item.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children) })) };
+        if (item.elseBlock) return { ...item, elseBlock: { ...item.elseBlock, children: updateInItems(item.elseBlock.children || []) } };
+        return item;
+      });
+    };
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const deleteElse = (ifBlockId) => {
+    const updateInItems = (items) => {
+      return items.map(item => {
+        if (item.id === ifBlockId && item.type === 'if') {
+          return { ...item, elseBlock: null };
+        }
+        if (item.children) return { ...item, children: updateInItems(item.children) };
+        if (item.elifBlocks) return { ...item, elifBlocks: item.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children) })) };
+        if (item.elseBlock) return { ...item, elseBlock: { ...item.elseBlock, children: updateInItems(item.elseBlock.children || []) } };
+        return item;
+      });
+    };
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
   // Render individual mapping item
   const renderItem = (item, depth = 0, parentId = null, index = 0) => {
     const isExpanded = expandedBlocks.has(item.id);
@@ -993,12 +1023,19 @@ const GrizzlyMappingTool = () => {
     }
 
     if (item.type === 'if') {
+      // Helper: add-item bar used inside IF/ELIF/ELSE bodies
+      const addBar = (parentId, borderColor, textColor, hoverColor) => (
+        <div className="flex gap-2 mt-2 pl-6">
+          <button onClick={() => addItem(parentId, 'assignment')} className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> Assignment</button>
+          <button onClick={() => addItem(parentId, 'if')}         className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> If</button>
+          <button onClick={() => addItem(parentId, 'for')}        className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> For</button>
+        </div>
+      );
+
       return (
-        <div
-          key={item.id}
-          className="my-2"
-          style={{ marginLeft: `${indentWidth}px` }}
-        >
+        <div key={item.id} className="my-2" style={{ marginLeft: `${indentWidth}px` }}>
+
+          {/* ── IF header + body ── */}
           <div className="border-l-4 border-purple-400 bg-purple-50 rounded-lg">
             <div className="flex items-center gap-2 p-3 bg-purple-100 rounded-t-lg">
               <button onClick={() => toggleBlock(item.id)} className="p-1">
@@ -1007,153 +1044,89 @@ const GrizzlyMappingTool = () => {
               <span className="font-semibold text-purple-900 text-sm">IF</span>
               <input
                 type="text"
-                placeholder="Condition (e.g., input.age >= 18)"
+                placeholder="Condition (e.g., item?.accountNumber == 1234)"
                 value={item.condition}
                 onFocus={(e) => handleInputFocus(e, item.id, 'condition')}
                 onChange={(e) => handleInputChange(e, item.id, 'condition')}
-                className={`flex-1 px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm font-mono ${
+                className={`flex-1 px-3 py-2 border rounded focus:outline-none text-sm font-mono ${
                   selectedInput?.id === item.id && selectedInput?.field === 'condition'
-                    ? 'border-purple-500 bg-purple-200'
-                    : 'border-purple-300 bg-white'
+                    ? 'border-purple-500 bg-purple-200' : 'border-purple-300 bg-white'
                 }`}
               />
-              <button
-                onClick={() => deleteItem(item.id)}
-                className="p-2 text-red-600 hover:bg-red-50 rounded"
-              >
+              <button onClick={() => deleteItem(item.id)} className="p-2 text-red-500 hover:bg-red-50 rounded" title="Delete IF block">
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
-
             {isExpanded && (
               <div className="p-3 space-y-2">
                 {item.children?.map((child, idx) => renderItem(child, depth + 1, item.id, idx))}
-                
-                <div className="flex gap-2 mt-2" style={{ marginLeft: `${24}px` }}>
-                  <button
-                    onClick={() => addItem(item.id, 'assignment')}
-                    className="px-3 py-1.5 bg-white border border-purple-300 text-purple-700 rounded hover:bg-purple-50 text-xs flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3" /> Assignment
-                  </button>
-                  <button
-                    onClick={() => addItem(item.id, 'if')}
-                    className="px-3 py-1.5 bg-white border border-purple-300 text-purple-700 rounded hover:bg-purple-50 text-xs flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3" /> If
-                  </button>
-                  <button
-                    onClick={() => addItem(item.id, 'for')}
-                    className="px-3 py-1.5 bg-white border border-purple-300 text-purple-700 rounded hover:bg-purple-50 text-xs flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3" /> For
-                  </button>
-                </div>
-
-                {item.elifBlocks?.map((elif, elifIdx) => (
-                  <div key={elif.id} className="border-l-4 border-indigo-400 bg-indigo-50 rounded-lg mt-2">
-                    <div className="flex items-center gap-2 p-3 bg-indigo-100 rounded-t-lg">
-                      <button onClick={() => toggleBlock(elif.id)} className="p-1">
-                        {expandedBlocks.has(elif.id) ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                      </button>
-                      <span className="font-semibold text-indigo-900 text-sm">ELIF</span>
-                      <input
-                        type="text"
-                        placeholder="Condition"
-                        value={elif.condition}
-                        onFocus={(e) => handleInputFocus(e, elif.id, 'condition')}
-                        onChange={(e) => {
-                          handleInputChange(e, elif.id, 'condition');
-                          updateElifCondition(item.id, elifIdx, e.target.value);
-                        }}
-                        className={`flex-1 px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm font-mono ${
-                          selectedInput?.id === elif.id && selectedInput?.field === 'condition'
-                            ? 'border-indigo-500 bg-indigo-200'
-                            : 'border-indigo-300 bg-white'
-                        }`}
-                      />
-                    </div>
-                    {expandedBlocks.has(elif.id) && (
-                      <div className="p-3 space-y-2">
-                        {elif.children?.map((child, idx) => renderItem(child, depth + 2, elif.id, idx))}
-                        <div className="flex gap-2 mt-2" style={{ marginLeft: `${24}px` }}>
-                          <button
-                            onClick={() => addItem(elif.id, 'assignment')}
-                            className="px-3 py-1.5 bg-white border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 text-xs flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" /> Assignment
-                          </button>
-                          <button
-                            onClick={() => addItem(elif.id, 'if')}
-                            className="px-3 py-1.5 bg-white border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 text-xs flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" /> If
-                          </button>
-                          <button
-                            onClick={() => addItem(elif.id, 'for')}
-                            className="px-3 py-1.5 bg-white border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 text-xs flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" /> For
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                {item.elseBlock && (
-                  <div className="border-l-4 border-pink-400 bg-pink-50 rounded-lg mt-2">
-                    <div className="flex items-center gap-2 p-3 bg-pink-100 rounded-t-lg">
-                      <button onClick={() => toggleBlock(item.elseBlock.id)} className="p-1">
-                        {expandedBlocks.has(item.elseBlock.id) ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                      </button>
-                      <span className="font-semibold text-pink-900 text-sm">ELSE</span>
-                    </div>
-                    {expandedBlocks.has(item.elseBlock.id) && (
-                      <div className="p-3 space-y-2">
-                        {item.elseBlock.children?.map((child, idx) => renderItem(child, depth + 2, item.elseBlock.id, idx))}
-                        <div className="flex gap-2 mt-2" style={{ marginLeft: `${24}px` }}>
-                          <button
-                            onClick={() => addItem(item.elseBlock.id, 'assignment')}
-                            className="px-3 py-1.5 bg-white border border-pink-300 text-pink-700 rounded hover:bg-pink-50 text-xs flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" /> Assignment
-                          </button>
-                          <button
-                            onClick={() => addItem(item.elseBlock.id, 'if')}
-                            className="px-3 py-1.5 bg-white border border-pink-300 text-pink-700 rounded hover:bg-pink-50 text-xs flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" /> If
-                          </button>
-                          <button
-                            onClick={() => addItem(item.elseBlock.id, 'for')}
-                            className="px-3 py-1.5 bg-white border border-pink-300 text-pink-700 rounded hover:bg-pink-50 text-xs flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" /> For
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex gap-2 mt-2">
-                  <button
-                    onClick={() => addElif(item.id)}
-                    className="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs"
-                  >
-                    + Add ELIF
-                  </button>
-                  {!item.elseBlock && (
-                    <button
-                      onClick={() => addElse(item.id)}
-                      className="px-3 py-1.5 bg-pink-600 text-white rounded hover:bg-pink-700 text-xs"
-                    >
-                      + Add ELSE
-                    </button>
-                  )}
-                </div>
+                {addBar(item.id, 'border-purple-300', 'text-purple-700', 'hover:bg-purple-50')}
               </div>
+            )}
+          </div>
+
+          {/* ── ELIF blocks — same visual level as IF ── */}
+          {item.elifBlocks?.map((elif, elifIdx) => (
+            <div key={elif.id} className="border-l-4 border-indigo-400 bg-indigo-50 rounded-lg mt-1">
+              <div className="flex items-center gap-2 p-3 bg-indigo-100 rounded-t-lg">
+                <button onClick={() => toggleBlock(elif.id)} className="p-1">
+                  {expandedBlocks.has(elif.id) ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                <span className="font-semibold text-indigo-900 text-sm">ELIF</span>
+                <input
+                  type="text"
+                  placeholder="Condition"
+                  value={elif.condition}
+                  onFocus={(e) => handleInputFocus(e, elif.id, 'condition')}
+                  onChange={(e) => {
+                    handleInputChange(e, elif.id, 'condition');
+                    updateElifCondition(item.id, elifIdx, e.target.value);
+                  }}
+                  className={`flex-1 px-3 py-2 border rounded focus:outline-none text-sm font-mono ${
+                    selectedInput?.id === elif.id && selectedInput?.field === 'condition'
+                      ? 'border-indigo-500 bg-indigo-200' : 'border-indigo-300 bg-white'
+                  }`}
+                />
+                <button onClick={() => deleteElif(item.id, elifIdx)} className="p-2 text-red-500 hover:bg-red-50 rounded" title="Delete ELIF">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+              {expandedBlocks.has(elif.id) && (
+                <div className="p-3 space-y-2">
+                  {elif.children?.map((child, idx) => renderItem(child, depth + 1, elif.id, idx))}
+                  {addBar(elif.id, 'border-indigo-300', 'text-indigo-700', 'hover:bg-indigo-50')}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* ── ELSE block — same visual level as IF ── */}
+          {item.elseBlock && (
+            <div className="border-l-4 border-pink-400 bg-pink-50 rounded-lg mt-1">
+              <div className="flex items-center gap-2 p-3 bg-pink-100 rounded-t-lg">
+                <button onClick={() => toggleBlock(item.elseBlock.id)} className="p-1">
+                  {expandedBlocks.has(item.elseBlock.id) ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                <span className="font-semibold text-pink-900 text-sm">ELSE</span>
+                <div className="flex-1" />
+                <button onClick={() => deleteElse(item.id)} className="p-2 text-red-500 hover:bg-red-50 rounded" title="Delete ELSE">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+              {expandedBlocks.has(item.elseBlock.id) && (
+                <div className="p-3 space-y-2">
+                  {item.elseBlock.children?.map((child, idx) => renderItem(child, depth + 1, item.elseBlock.id, idx))}
+                  {addBar(item.elseBlock.id, 'border-pink-300', 'text-pink-700', 'hover:bg-pink-50')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Add ELIF / Add ELSE controls ── */}
+          <div className="flex gap-2 mt-1 pl-1">
+            <button onClick={() => addElif(item.id)} className="px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs">+ Add ELIF</button>
+            {!item.elseBlock && (
+              <button onClick={() => addElse(item.id)} className="px-3 py-1 bg-pink-600 text-white rounded hover:bg-pink-700 text-xs">+ Add ELSE</button>
             )}
           </div>
         </div>
@@ -1310,19 +1283,34 @@ const GrizzlyMappingTool = () => {
         .join(' ');
     };
 
-    // Helper to clean target path (remove 'output.' or 'input.' prefix)
+    // Helper to clean target path: strip output./input. prefix AND [*] array markers
     const cleanPath = (path) => {
       if (!path) return '';
-      if (path.startsWith('output.')) return path.substring(7);
-      if (path.startsWith('input.')) return path.substring(6);
-      return path;
+      if (path.startsWith('output.')) path = path.substring(7);
+      else if (path.startsWith('input.')) path = path.substring(6);
+      return path.replace(/\[\*\]/g, '');
     };
 
-    // Normalise expression: keep INPUT? safe-nav as-is, replace bare 'input.' prefix
+    // Extract root key from a cleaned target path
+    const rootKeyOf = (cleanedTarget) => cleanedTarget.replace(/\[\*\]/g, '').split('.')[0];
+
+    // Normalise expression: replace 'input.' prefix with 'INPUT?.'
     const cleanExpr = (expr) => {
       if (!expr) return '""';
-      // Replace 'input.' (case-insensitive, not already INPUT?) with INPUT?.
       return expr.replace(/\binput\./gi, 'INPUT?.');
+    };
+
+    // Inside a for-loop body rewrite expressions: INPUT?.accounts[*].foo → iterator?.foo
+    const rewriteForExpr = (expr, iterator, iterable) => {
+      if (!expr || !iterable) return expr;
+      const iterableBase = iterable
+        .replace(/^INPUT\?\./i, '')
+        .replace(/^input\./i, '')
+        .replace(/\[\*\]/g, '');
+      const escaped = iterableBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return expr
+        .replace(new RegExp('INPUT\\?\\.' + escaped + '\\[\\*\\]\\.', 'gi'), iterator + '?.')
+        .replace(new RegExp('INPUT\\?\\.' + escaped + '\\.', 'gi'), iterator + '?.');
     };
 
     // ─── Dict / list-comprehension builder ───────────────────────────────────
@@ -1429,30 +1417,32 @@ const GrizzlyMappingTool = () => {
     };
 
     // Collect assignments from for-loop children and convert paths using iterator var
-    const collectForChildren = (children, iterator) => {
+    const collectForChildren = (children, iterator, iterable) => {
       const results = [];
       (children || []).forEach(item => {
         if (item.type === 'assignment' && item.target) {
           const cleaned = cleanPath(item.target);
-          // Replace leading iterator prefix in expression paths
-          const expr = cleanExpr(item.expression || '""');
+          const expr = rewriteForExpr(cleanExpr(item.expression || '""'), iterator, iterable);
           results.push({ cleanedTarget: cleaned, expression: expr });
         }
       });
       return results;
     };
 
-    // Build inner dict structure for list-comp body (no root key stripping)
+    // Build inner dict structure for list-comp body.
+    // Strips the first path segment (array root key) so paths become relative to each item.
     const buildInnerDict = (assignments) => {
       const structure = {};
       assignments.forEach(({ cleanedTarget, expression }) => {
         const parts = cleanedTarget.split('.');
+        // Skip the first segment (the array root key, e.g. "financialAccounts")
+        const innerParts = parts.length > 1 ? parts.slice(1) : parts;
         let current = structure;
-        for (let i = 0; i < parts.length - 1; i++) {
-          if (!current[parts[i]]) current[parts[i]] = {};
-          current = current[parts[i]];
+        for (let i = 0; i < innerParts.length - 1; i++) {
+          if (!current[innerParts[i]]) current[innerParts[i]] = {};
+          current = current[innerParts[i]];
         }
-        current[parts[parts.length - 1]] = expression;
+        current[innerParts[innerParts.length - 1]] = expression;
       });
       return structure;
     };
@@ -1466,7 +1456,7 @@ const GrizzlyMappingTool = () => {
       items.forEach(item => {
         if (item.type === 'assignment' && item.target) {
           const cleanedTarget = cleanPath(item.target);
-          const rootKey = cleanedTarget.split('.')[0];
+          const rootKey = rootKeyOf(cleanedTarget);
 
           if (!currentGroup || currentGroup.rootKey !== rootKey) {
             if (currentGroup) groups.push(currentGroup);
@@ -1478,8 +1468,8 @@ const GrizzlyMappingTool = () => {
           // Peek: does this for-loop feed a single root OUTPUT key via its children?
           const childAssignments = item.children.filter(c => c.type === 'assignment' && c.target);
           if (childAssignments.length > 0) {
-            const rootKey = cleanPath(childAssignments[0].target).split('.')[0];
-            const allSameRoot = childAssignments.every(c => cleanPath(c.target).split('.')[0] === rootKey);
+            const rootKey = rootKeyOf(cleanPath(childAssignments[0].target));
+            const allSameRoot = childAssignments.every(c => rootKeyOf(cleanPath(c.target)) === rootKey);
 
             if (allSameRoot) {
               // Merge into current group or start new one targeting rootKey
@@ -1512,19 +1502,20 @@ const GrizzlyMappingTool = () => {
 
     // ─── Emit lines ───────────────────────────────────────────────────────────
 
-    const emitLines = (items, indent) => {
+    const emitLines = (items, indent, forCtx = null) => {
       const pre = '    '.repeat(indent);
       const groups = groupAssignmentsByRoot(items);
 
       groups.forEach(group => {
         if (group.item) {
-          emitSingleItem(group.item, indent);
+          emitSingleItem(group.item, indent, forCtx);
         } else if (group.assignments && group.assignments.length > 0) {
           const { rootKey, assignments } = group;
 
           // Single direct assignment (no nesting)
           if (assignments.length === 1 && !assignments[0].cleanedTarget.includes('.') && !assignments[0]._forMeta) {
-            lines.push(`${pre}OUTPUT["${rootKey}"] = ${assignments[0].expression}`);
+            const expr = forCtx ? rewriteForExpr(assignments[0].expression, forCtx.iterator, forCtx.iterable) : assignments[0].expression;
+            lines.push(`${pre}OUTPUT["${rootKey}"] = ${expr}`);
             return;
           }
 
@@ -1540,10 +1531,12 @@ const GrizzlyMappingTool = () => {
 
             // Rebuild list comp using the named variable
             const safeIterable = `(${iterVarName} or [])`;
-            const innerAssignments = collectForChildren(assignments[0]._forMeta.children, iterator);
+            const innerAssignments = collectForChildren(assignments[0]._forMeta.children, iterator, iterable);
             const innerStructure = buildInnerDict(innerAssignments);
             const dictLines = generateDict(innerStructure, indent + 2);
 
+            // dictLines already contains the { ... } inner dict lines from generateDict
+            // Emit: OUTPUT["key"] = { "key": [ <dict> for item in iterable ] }
             if (dictLines.length === 1) {
               lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
               lines.push(`${pre}    "${rootKey}": [${dictLines[0]} for ${iterator} in ${safeIterable}]`);
@@ -1551,8 +1544,16 @@ const GrizzlyMappingTool = () => {
             } else {
               lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
               lines.push(`${pre}    "${rootKey}": [`);
-              lines.push(`${pre}        {`);
-              dictLines.forEach(l => lines.push(`${pre}        ${l}`));
+              // dictLines: first line is '{', last line is '}', middle are key:value pairs
+              dictLines.forEach((l, i) => {
+                if (i === 0) {
+                  lines.push(`${pre}        {`);
+                } else if (i === dictLines.length - 1) {
+                  lines.push(`${pre}        }`);
+                } else {
+                  lines.push(`${pre}        ${l.trim()}`);
+                }
+              });
               lines.push(`${pre}        for ${iterator} in ${safeIterable}`);
               lines.push(`${pre}    ]`);
               lines.push(`${pre}}`);
@@ -1574,7 +1575,7 @@ const GrizzlyMappingTool = () => {
       });
     };
 
-    const emitSingleItem = (m, indent) => {
+    const emitSingleItem = (m, indent, forCtx = null) => {
       const pre = '    '.repeat(indent);
 
       if (m.type === 'module_call' && m.moduleName) {
@@ -1584,27 +1585,52 @@ const GrizzlyMappingTool = () => {
 
       if (m.type === 'assignment' && m.target) {
         const cleaned = cleanPath(m.target);
-        lines.push(`${pre}OUTPUT["${cleaned}"] = ${cleanExpr(m.expression)}`);
+        let expr = cleanExpr(m.expression);
+        if (forCtx) expr = rewriteForExpr(expr, forCtx.iterator, forCtx.iterable);
+        lines.push(`${pre}OUTPUT["${cleaned}"] = ${expr}`);
         return;
       }
 
       if (m.type === 'if') {
-        lines.push(`${pre}if ${m.condition || 'False'}:`);
-        emitLines(m.children || [], indent + 1);
+        const rawCond = forCtx ? rewriteForExpr(cleanExpr(m.condition || 'False'), forCtx.iterator, forCtx.iterable) : cleanExpr(m.condition || 'False');
+        const cond = rawCond;
+        lines.push(`${pre}if ${cond}:`);
+        if ((m.children || []).length > 0) {
+          emitLines(m.children, indent + 1, forCtx);
+        } else {
+          lines.push(`${pre}    pass`);
+        }
         (m.elifBlocks || []).forEach(eb => {
-          lines.push(`${pre}elif ${eb.condition || 'False'}:`);
-          emitLines(eb.children || [], indent + 1);
+          const elifCond = forCtx
+            ? rewriteForExpr(cleanExpr(eb.condition || 'False'), forCtx.iterator, forCtx.iterable)
+            : cleanExpr(eb.condition || 'False');
+          lines.push(`${pre}elif ${elifCond}:`);
+          if ((eb.children || []).length > 0) {
+            emitLines(eb.children, indent + 1, forCtx);
+          } else {
+            lines.push(`${pre}    pass`);
+          }
         });
         if (m.elseBlock) {
           lines.push(`${pre}else:`);
-          emitLines(m.elseBlock.children || [], indent + 1);
+          if ((m.elseBlock.children || []).length > 0) {
+            emitLines(m.elseBlock.children, indent + 1, forCtx);
+          } else {
+            lines.push(`${pre}    pass`);
+          }
         }
         return;
       }
 
       if (m.type === 'for') {
-        lines.push(`${pre}for ${m.iterator || 'item'} in ${cleanExpr(m.iterable || '')}:`);
-        emitLines(m.children || [], indent + 1);
+        const iterExpr = cleanExpr(m.iterable || '[]');
+        const newForCtx = { iterator: m.iterator || 'item', iterable: iterExpr };
+        lines.push(`${pre}for ${newForCtx.iterator} in ${iterExpr}:`);
+        if ((m.children || []).length > 0) {
+          emitLines(m.children, indent + 1, newForCtx);
+        } else {
+          lines.push(`${pre}    pass`);
+        }
       }
     };
 
