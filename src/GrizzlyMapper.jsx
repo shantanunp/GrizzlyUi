@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers } from 'lucide-react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
+import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers, CheckCircle2 } from 'lucide-react';
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -501,6 +501,74 @@ const GrizzlyMappingTool = () => {
   const outputPaths = buildSchemaPathsList(outputSchema, 'output.', false);
   const allPaths = [...inputPaths, ...outputPaths];
 
+  // Collect all mapped field paths across all modules for highlighting
+  const { mappedInputPaths, mappedOutputPaths } = useMemo(() => {
+    const inp = new Set();
+    const out = new Set();
+    const addPath = (p, set) => {
+      if (!p || typeof p !== 'string') return;
+      let s = p.trim()
+        .replace(/^INPUT\??\./i, 'input.')
+        .replace(/^OUTPUT\??\./i, 'output.')
+        .replace(/\[\*\]/g, '');
+      if (!s.startsWith('input.') && !s.startsWith('output.')) {
+        s = (set === out ? 'output.' : 'input.') + s;
+      }
+      set.add(s);
+    };
+    const extractFromExpr = (expr) => {
+      if (!expr || typeof expr !== 'string') return;
+      const re = /(?:input|INPUT)\??\.([\w.[\]*?]+)/gi;
+      let m;
+      while ((m = re.exec(expr)) !== null) addPath('input.' + m[1].replace(/\[\*\]/g, '').replace(/\?/g, ''), inp);
+    };
+    const walk = (items) => {
+      (items || []).forEach((item) => {
+        if (item.type === 'assignment') {
+          if (item.target) addPath(item.target, out);
+          if (item.expression) extractFromExpr(item.expression);
+          if (item.lcIterable) addPath(item.lcIterable, inp);
+
+          if (item.listComp) {
+            const base = item.target || '';
+            if (item.lcMode === 'static') {
+              (item.lcElements || []).forEach(el => {
+                (el.fields || []).forEach(f => {
+                  if (f.target) addPath(base + '.' + f.target, out);
+                  if (f.exprType === 'input' && f.expression) extractFromExpr(f.expression);
+                });
+              });
+            } else {
+              (item.lcChildren || []).forEach(child => {
+                if (child.type === 'assignment' && child.lcTarget) {
+                  addPath(base + '.' + child.lcTarget, out);
+                  if (child.expression) extractFromExpr(child.expression);
+                }
+                if (child.type === 'if') {
+                  if (child.lcTarget) addPath(base + '.' + child.lcTarget, out);
+                  if (child.ifExpr) extractFromExpr(child.ifExpr);
+                  if (child.elseExpr) extractFromExpr(child.elseExpr);
+                  if (child.condition) extractFromExpr(child.condition);
+                }
+              });
+            }
+          }
+        }
+        if (item.type === 'variable' && item.expression) extractFromExpr(item.expression);
+        if (item.type === 'for') {
+          if (item.iterable) addPath(item.iterable, inp);
+          if (item.lcIterable) addPath(item.lcIterable, inp);
+        }
+        if (item.type === 'if' && item.condition) extractFromExpr(item.condition);
+        walk(item.children);
+        (item.elifBlocks || []).forEach((eb) => walk(eb.children));
+        if (item.elseBlock) walk(item.elseBlock.children);
+      });
+    };
+    modules.forEach((mod) => walk(mod.mappings || []));
+    return { mappedInputPaths: inp, mappedOutputPaths: out };
+  }, [modules]);
+
   // Expand both schema trees when entering step 2 (sync after DOM so roots stay expanded)
   const expandBothTrees = () => {
     setExpandedNodes(getAllExpandedIds(inputSchema, outputSchema));
@@ -696,6 +764,10 @@ const GrizzlyMappingTool = () => {
       }
     }
 
+    const mappedSet = isInput ? mappedInputPaths : mappedOutputPaths;
+    const normalizedPath = fullPath.replace(/\[\*\]/g, '');
+    const isMapped = mappedSet.has(normalizedPath);
+
     const handleDragStart = (e) => {
       if (schema.type !== 'object' || !schema.properties) {
         const dragData = {
@@ -753,13 +825,14 @@ const GrizzlyMappingTool = () => {
             } : undefined}
             className={`flex items-center gap-2 p-2 hover:bg-gray-100 rounded ${isInput ? 'cursor-move' : 'cursor-pointer'} ${
               selectedInput?.field === 'iterable' && isInput ? 'bg-green-50 ring-1 ring-green-300' : ''
-            }`}
+            } ${isMapped ? 'bg-emerald-50 border-l-2 border-emerald-400' : ''}`}
             onClick={() => toggleNode(nodeId)}
             title={isInput ? 'Double-click or drag to use as FOR iterable' : undefined}
           >
             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <Database className="w-4 h-4 text-green-600" />
+            <Database className={`w-4 h-4 ${isMapped ? 'text-emerald-600' : 'text-green-600'}`} />
             <span className="text-sm font-medium">{name}</span>
+            {isMapped && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 ml-auto" />}
             <span className="text-xs text-gray-500 ml-auto">array</span>
           </div>
           {isExpanded && (
@@ -770,6 +843,11 @@ const GrizzlyMappingTool = () => {
         </div>
       );
     } else {
+      const activeHighlight = selectedInput && 
+        ((selectedInput.field === 'target' && !isInput) || 
+         (selectedInput.field === 'expression' && isInput) ||
+         (selectedInput.field === 'condition') ||
+         (selectedInput.field === 'iterable' && isInput));
       return (
         <div
           key={nodeId}
@@ -777,17 +855,13 @@ const GrizzlyMappingTool = () => {
           onDragStart={handleDragStart}
           onDoubleClick={handleDoubleClick}
           className={`flex items-center gap-2 p-2 hover:bg-gray-100 rounded cursor-move ${
-            selectedInput && 
-            ((selectedInput.field === 'target' && !isInput) || 
-             (selectedInput.field === 'expression' && isInput) ||
-             (selectedInput.field === 'condition') ||
-             (selectedInput.field === 'iterable' && isInput))
-            ? 'bg-blue-50' : ''
+            activeHighlight ? 'bg-blue-50' : isMapped ? 'bg-emerald-50 border-l-2 border-emerald-400' : ''
           }`}
           title="Double-click to insert into selected field"
         >
-          <File className="w-4 h-4 text-slate-600" />
+          <File className={`w-4 h-4 ${isMapped ? 'text-emerald-600' : 'text-slate-600'}`} />
           <span className="text-sm">{name}</span>
+          {isMapped && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
           <span className="text-xs text-gray-500 ml-auto">{schema.type}</span>
         </div>
       );
