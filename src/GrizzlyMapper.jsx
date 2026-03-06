@@ -953,7 +953,26 @@ const GrizzlyMappingTool = () => {
     updateModuleMappings(activeModule, update(mappings));
   };
 
-  const deleteLcElementField = (assignmentId, elId, fieldId) => {
+  // Replace an entire field object at once (avoids stale-state from multi-key forEach)
+  const replaceLcElementField = (assignmentId, elId, fieldId, newField) => {
+    const update = (items) => items.map(item => {
+      if (item.id === assignmentId) return {
+        ...item,
+        lcElements: (item.lcElements || []).map(e => e.id !== elId ? e : {
+          ...e,
+          fields: (e.fields || []).map(f => f.id !== fieldId ? f : { ...f, ...newField })
+        })
+      };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: update(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: update(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: update(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, update(mappings));
+  };
+
+    const deleteLcElementField = (assignmentId, elId, fieldId) => {
     const update = (items) => items.map(item => {
       if (item.id === assignmentId) return {
         ...item,
@@ -1357,7 +1376,7 @@ const GrizzlyMappingTool = () => {
                             {(el.fields||[]).map(field =>
                               renderFieldRow(
                                 field.id, field,
-                                (updated) => { Object.entries(updated).forEach(([k,v]) => { if(k!=='id') updateLcElementField(item.id, el.id, field.id, k, v); }); },
+                                (updated) => replaceLcElementField(item.id, el.id, field.id, updated),
                                 () => deleteLcElementField(item.id, el.id, field.id)
                               )
                             )}
