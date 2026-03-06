@@ -135,9 +135,21 @@ const parseTemplate = (pythonCode) => {
       currentModule.mappings.push({ id: uid(), type: 'module_call', moduleName: callName });
       return;
     }
+    // Variable: var_name = expression (number, text, list, etc.)
+    const varMatch = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/);
+    if (varMatch && !trimmed.startsWith('OUTPUT')) {
+      currentModule.mappings.push({
+        id: uid(),
+        type: 'variable',
+        varName: varMatch[1],
+        expression: (varMatch[2] || '').replace(/^INPUT\./i, 'input.').trim()
+      });
+      return;
+    }
     const assignMatch = trimmed.match(/OUTPUT\["([^"]+)"\]\s*=\s*(.+)/);
     if (assignMatch) {
       currentModule.mappings.push({ id: uid(), type: 'assignment', target: assignMatch[1], expression: (assignMatch[2] || '').replace(/^INPUT\./i, 'input.').trim() });
+      return;
     }
   });
   return modules.length ? modules : [{ id: uid(), name: 'main', mappings: [] }];
@@ -164,6 +176,7 @@ const getItemSignature = (item) => {
   if (!item) return '';
   const base = { type: item.type };
   if (item.type === 'assignment') return JSON.stringify({ ...base, target: item.target, expression: item.expression });
+  if (item.type === 'variable') return JSON.stringify({ ...base, varName: item.varName, expression: item.expression });
   if (item.type === 'module_call') return JSON.stringify({ ...base, moduleName: item.moduleName });
   if (item.type === 'if') return JSON.stringify({ ...base, condition: item.condition });
   if (item.type === 'for') return JSON.stringify({ ...base, iterator: item.iterator, iterable: item.iterable });
@@ -174,6 +187,7 @@ const getItemSignature = (item) => {
 const describeItem = (item) => {
   if (!item) return '';
   if (item.type === 'assignment') return `${item.target || '?'} ← ${(item.expression || '').slice(0, 40)}${(item.expression || '').length > 40 ? '…' : ''}`;
+  if (item.type === 'variable') return `${item.varName || '?'} = ${(item.expression || '').slice(0, 40)}${(item.expression || '').length > 40 ? '…' : ''}`;
   if (item.type === 'module_call') return `call ${item.moduleName || '?'}`;
   if (item.type === 'if') return `if (${(item.condition || '').slice(0, 50)}${(item.condition || '').length > 50 ? '…' : ''})`;
   if (item.type === 'for') return `for ${item.iterator || '?'} in ${(item.iterable || '').slice(0, 30)}${(item.iterable || '').length > 30 ? '…' : ''}`;
@@ -618,6 +632,9 @@ const GrizzlyMappingTool = () => {
     if (type === 'assignment') {
       newItem.target = '';
       newItem.expression = '';
+    } else if (type === 'variable') {
+      newItem.varName = '';
+      newItem.expression = '';
     } else if (type === 'if') {
       newItem.condition = '';
       newItem.children = [];
@@ -685,16 +702,17 @@ const GrizzlyMappingTool = () => {
   const deleteItem = (id) => {
     const deleteFromParent = (items, targetId) => {
       return items.map(item => {
+        let result = { ...item };
         if (item.children) {
-          return {
-            ...item,
+          result = {
+            ...result,
             children: item.children.filter(child => child.id !== targetId)
               .map(child => deleteFromParent([child], targetId)[0])
           };
         }
         if (item.elifBlocks) {
-          return {
-            ...item,
+          result = {
+            ...result,
             elifBlocks: item.elifBlocks.map(elif => ({
               ...elif,
               children: elif.children.filter(child => child.id !== targetId)
@@ -703,8 +721,8 @@ const GrizzlyMappingTool = () => {
           };
         }
         if (item.elseBlock) {
-          return {
-            ...item,
+          result = {
+            ...result,
             elseBlock: {
               ...item.elseBlock,
               children: (item.elseBlock.children || []).filter(child => child.id !== targetId)
@@ -712,7 +730,7 @@ const GrizzlyMappingTool = () => {
             }
           };
         }
-        return item;
+        return result;
       }).filter(item => item.id !== targetId);
     };
     updateModuleMappings(activeModule,deleteFromParent(mappings, id));
@@ -724,12 +742,14 @@ const GrizzlyMappingTool = () => {
         if (item.id === id) {
           return { ...item, [field]: value };
         }
+        // IF blocks have children, elifBlocks, AND elseBlock — must process all
+        let result = { ...item };
         if (item.children) {
-          return { ...item, children: updateInItems(item.children) };
+          result = { ...result, children: updateInItems(item.children) };
         }
         if (item.elifBlocks) {
-          return {
-            ...item,
+          result = {
+            ...result,
             elifBlocks: item.elifBlocks.map(elif => ({
               ...elif,
               children: updateInItems(elif.children)
@@ -737,15 +757,15 @@ const GrizzlyMappingTool = () => {
           };
         }
         if (item.elseBlock) {
-          return {
-            ...item,
+          result = {
+            ...result,
             elseBlock: {
               ...item.elseBlock,
               children: updateInItems(item.elseBlock.children || [])
             }
           };
         }
-        return item;
+        return result;
       });
     };
     updateModuleMappings(activeModule,updateInItems(mappings));
@@ -762,28 +782,11 @@ const GrizzlyMappingTool = () => {
             )
           };
         }
-        if (item.children) {
-          return { ...item, children: updateInItems(item.children) };
-        }
-        if (item.elifBlocks) {
-          return {
-            ...item,
-            elifBlocks: item.elifBlocks.map(elif => ({
-              ...elif,
-              children: updateInItems(elif.children)
-            }))
-          };
-        }
-        if (item.elseBlock) {
-          return {
-            ...item,
-            elseBlock: {
-              ...item.elseBlock,
-              children: updateInItems(item.elseBlock.children || [])
-            }
-          };
-        }
-        return item;
+        let result = { ...item };
+        if (item.children) result = { ...result, children: updateInItems(item.children) };
+        if (item.elifBlocks) result = { ...result, elifBlocks: item.elifBlocks.map(elif => ({ ...elif, children: updateInItems(elif.children) })) };
+        if (item.elseBlock) result = { ...result, elseBlock: { ...item.elseBlock, children: updateInItems(item.elseBlock.children || []) } };
+        return result;
       });
     };
     updateModuleMappings(activeModule,updateInItems(mappings));
@@ -833,39 +836,22 @@ const GrizzlyMappingTool = () => {
   };
 
   const addElse = (ifBlockId) => {
+    let newElseId = null;
     const updateInItems = (items) => {
       return items.map(item => {
         if (item.id === ifBlockId && item.type === 'if') {
-          return {
-            ...item,
-            elseBlock: { id: generateId(), children: [] }
-          };
+          newElseId = generateId();
+          return { ...item, elseBlock: { id: newElseId, children: [] } };
         }
-        if (item.children) {
-          return { ...item, children: updateInItems(item.children) };
-        }
-        if (item.elifBlocks) {
-          return {
-            ...item,
-            elifBlocks: item.elifBlocks.map(elif => ({
-              ...elif,
-              children: updateInItems(elif.children)
-            }))
-          };
-        }
-        if (item.elseBlock) {
-          return {
-            ...item,
-            elseBlock: {
-              ...item.elseBlock,
-              children: updateInItems(item.elseBlock.children || [])
-            }
-          };
-        }
-        return item;
+        let result = { ...item };
+        if (item.children) result = { ...result, children: updateInItems(item.children) };
+        if (item.elifBlocks) result = { ...result, elifBlocks: item.elifBlocks.map(elif => ({ ...elif, children: updateInItems(elif.children) })) };
+        if (item.elseBlock) result = { ...result, elseBlock: { ...item.elseBlock, children: updateInItems(item.elseBlock.children || []) } };
+        return result;
       });
     };
-    updateModuleMappings(activeModule,updateInItems(mappings));
+    updateModuleMappings(activeModule, updateInItems(mappings));
+    if (newElseId) setExpandedBlocks(prev => new Set([...prev, newElseId]));
   };
 
   const deleteElif = (ifBlockId, elifIdx) => {
@@ -926,6 +912,54 @@ const GrizzlyMappingTool = () => {
                   <option key={m.id} value={m.name}>{m.name}</option>
                 ))}
               </select>
+            </div>
+            <button type="button" onClick={() => deleteItem(item.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (item.type === 'variable') {
+      const handleExprDrop = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          const dragData = JSON.parse(e.dataTransfer.getData('application/json'));
+          if (dragData && dragData.isInput) {
+            updateItem(item.id, 'expression', dragData.path);
+          }
+        } catch (err) {
+          console.error('Error parsing drag data:', err);
+        }
+      };
+      return (
+        <div key={item.id} className="group hover:bg-slate-50 rounded-lg transition-colors" style={{ marginLeft: `${indentWidth}px` }}>
+          <div className="flex items-center gap-2 p-3 border border-slate-200 rounded-lg bg-slate-50/50">
+            <Code className="w-4 h-4 text-slate-500 shrink-0" />
+            <div className="flex-1 grid grid-cols-2 gap-3">
+              <input
+                type="text"
+                placeholder="Variable name (e.g. collateral_list)"
+                value={item.varName || ''}
+                onChange={(e) => updateItem(item.id, 'varName', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 rounded text-sm font-mono bg-white focus:outline-none focus:border-slate-400"
+              />
+              <div onDrop={handleExprDrop} onDragOver={handleDragOver} className="relative">
+                <input
+                  type="text"
+                  placeholder="Value (drag from Input or type: number, text, list...)"
+                  value={item.expression || ''}
+                  onFocus={(e) => handleInputFocus(e, item.id, 'expression')}
+                  onChange={(e) => handleInputChange(e, item.id, 'expression')}
+                  className={`w-full px-3 py-2 border rounded text-sm font-mono focus:outline-none focus:border-slate-400 ${
+                    selectedInput?.id === item.id && selectedInput?.field === 'expression'
+                      ? 'border-slate-500 bg-slate-100'
+                      : 'border-slate-200 bg-white'
+                  }`}
+                />
+              </div>
             </div>
             <button type="button" onClick={() => deleteItem(item.id)} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
               <Trash2 className="w-4 h-4" />
@@ -1025,6 +1059,7 @@ const GrizzlyMappingTool = () => {
       // Helper: add-item bar used inside IF/ELIF/ELSE bodies
       const addBar = (parentId, borderColor, textColor, hoverColor) => (
         <div className="flex gap-2 mt-2 pl-6">
+          <button onClick={() => addItem(parentId, 'variable')}  className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> Variable</button>
           <button onClick={() => addItem(parentId, 'assignment')} className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> Assignment</button>
           <button onClick={() => addItem(parentId, 'if')}         className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> If</button>
           <button onClick={() => addItem(parentId, 'for')}        className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> For</button>
@@ -1261,13 +1296,13 @@ const GrizzlyMappingTool = () => {
   const generateCode = () => {
     const lines = [];
 
-    // Convert snake_case or plain name to camelCase function name segment
-    // e.g. "collateral" -> "Collateral", "about_version" -> "AboutVersion"
+    // Convert to PascalCase for function name: "collateral" -> "Collateral", "about_version" -> "AboutVersion", "mismoIdentifiers" -> "MismoIdentifiers"
     const toCamelFuncName = (name) => {
-      return name
-        .split('_')
-        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
-        .join('');
+      if (!name) return '';
+      if (name.includes('_')) {
+        return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join('');
+      }
+      return name.charAt(0).toUpperCase() + name.slice(1);
     };
 
     // Human-readable docstring title: "aboutVersion" -> "About Version", "collateral" -> "Collateral"
@@ -1397,7 +1432,7 @@ const GrizzlyMappingTool = () => {
     // _forMeta = { iterator, iterable, children }  where children are assignment items.
     const buildListComp = ({ iterator, iterable, children }) => {
       // Collect inner assignments and render the dict body
-      const innerAssignments = collectForChildren(children, iterator);
+      const innerAssignments = collectForChildren(children, iterator, iterable);
       const innerStructure = buildInnerDict(innerAssignments);
       const dictLines = generateDict(innerStructure, 3); // deep indent for the comp body
 
@@ -1429,13 +1464,18 @@ const GrizzlyMappingTool = () => {
     };
 
     // Build inner dict structure for list-comp body.
-    // Strips the first path segment (array root key) so paths become relative to each item.
+    // Strips path segments so paths become relative to each array item.
+    // e.g. "financialAccounts.accountId" -> ["accountId"], "Collateral.Collateral.subjectProperty.x" -> ["subjectProperty","x"]
     const buildInnerDict = (assignments) => {
       const structure = {};
       assignments.forEach(({ cleanedTarget, expression }) => {
         const parts = cleanedTarget.split('.');
-        // Skip the first segment (the array root key, e.g. "financialAccounts")
-        const innerParts = parts.length > 1 ? parts.slice(1) : parts;
+        // Strip array root: 1 segment for "financialAccounts.accountId", 2 for "Collateral.Collateral.subjectProperty..."
+        const innerParts = parts.length > 1 && parts[0] === parts[1]
+          ? parts.slice(2)
+          : parts.length > 1
+            ? parts.slice(1)
+            : parts;
         let current = structure;
         for (let i = 0; i < innerParts.length - 1; i++) {
           if (!current[innerParts[i]]) current[innerParts[i]] = {};
@@ -1579,6 +1619,13 @@ const GrizzlyMappingTool = () => {
 
       if (m.type === 'module_call' && m.moduleName) {
         lines.push(`${pre}map${toCamelFuncName(m.moduleName)}(INPUT, OUTPUT)`);
+        return;
+      }
+
+      if (m.type === 'variable' && m.varName) {
+        let expr = cleanExpr(m.expression || '""');
+        if (forCtx) expr = rewriteForExpr(expr, forCtx.iterator, forCtx.iterable);
+        lines.push(`${pre}${m.varName} = ${expr}`);
         return;
       }
 
@@ -1878,6 +1925,9 @@ const GrizzlyMappingTool = () => {
               </button>
               <button onClick={() => addItem(null, 'assignment')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
                 <Plus className="w-4 h-4" /> Add Assignment
+              </button>
+              <button onClick={() => addItem(null, 'variable')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
+                <Code className="w-4 h-4" /> Add Variable
               </button>
               <button onClick={() => addItem(null, 'if')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
                 <Plus className="w-4 h-4" /> Add If
