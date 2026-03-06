@@ -1,5 +1,14 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers, CheckCircle2 } from 'lucide-react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import Prism from 'prismjs';
+import 'prismjs/components/prism-python';
+
+// Extend Python grammar to highlight custom ?. optional chaining operator
+if (Prism.languages.python && !Prism.languages.python['optional-chaining']) {
+  Prism.languages.python['optional-chaining'] = { pattern: /\?\./, alias: 'operator' };
+}
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -2923,10 +2932,24 @@ const GrizzlyMappingTool = () => {
 
 
       {step === 3 && (
-        <div className="max-w-4xl mx-auto p-6">
-          <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Export</h1>
-          <pre className="bg-slate-100 p-4 rounded-lg text-xs overflow-auto max-h-96 mb-4 font-mono whitespace-pre">{generateCode()}</pre>
-          <div className="flex gap-4">
+        <div className="flex flex-col h-[calc(100vh-4rem)] max-w-4xl mx-auto overflow-hidden">
+          <div className="p-6 pb-4 shrink-0">
+            <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Export</h1>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto px-6 pb-4" style={{ minHeight: 0 }}>
+            <div className="rounded-lg border border-slate-200 bg-slate-50">
+              <SyntaxHighlighter
+                language="python"
+                style={oneLight}
+                customStyle={{ margin: 0, padding: '1rem', fontSize: '0.75rem', background: '#f8fafc', maxHeight: 'none' }}
+                showLineNumbers
+                wrapLongLines
+              >
+                {generateCode()}
+              </SyntaxHighlighter>
+            </div>
+          </div>
+          <div className="flex gap-4 p-6 pt-0 shrink-0">
             <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
               <ArrowLeft className="w-4 h-4" /> Back to mapping
             </button>
