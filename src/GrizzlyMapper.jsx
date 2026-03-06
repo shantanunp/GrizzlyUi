@@ -1328,7 +1328,7 @@ const GrizzlyMappingTool = () => {
             <div className="flex-1 grid grid-cols-2 gap-3">
               <input
                 type="text"
-                placeholder="Variable name (e.g. collateral_list)"
+                placeholder="Variable name (e.g. item_list)"
                 value={item.varName || ''}
                 onChange={(e) => updateItem(item.id, 'varName', e.target.value)}
                 className="w-full px-3 py-2 border border-slate-200 rounded text-sm font-mono bg-white focus:outline-none focus:border-slate-400"
@@ -1392,7 +1392,7 @@ const GrizzlyMappingTool = () => {
                 {/* Output field path — shared by both branches */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-slate-500 w-16 shrink-0">field path</span>
-                  <input type="text" placeholder="e.g. subjectProperty.address.addressLineText"
+                  <input type="text" placeholder="e.g. field.nested.value"
                     value={child.lcTarget || ''}
                     onChange={e => updateLcChild(item.id, child.id, 'lcTarget', e.target.value)}
                     className="flex-1 px-2 py-1 border border-slate-300 rounded text-xs font-mono bg-yellow-50 focus:outline-none" />
@@ -1594,7 +1594,7 @@ const GrizzlyMappingTool = () => {
                       className="w-24 px-2 py-1.5 border border-green-300 rounded text-sm font-mono bg-white focus:outline-none"/>
                     <span className="font-bold text-green-800 text-sm">IN</span>
                     <div className="flex-1" onDrop={handleLcIterableDrop} onDragOver={handleDragOver}>
-                      <input type="text" placeholder="Drag array field or type (e.g. input.collateral)" value={item.lcIterable||''}
+                      <input type="text" placeholder="Drag array field or type (e.g. input.items)" value={item.lcIterable||''}
                         onFocus={e => handleInputFocus(e, item.id,'lcIterable')} onChange={e => handleInputChange(e, item.id,'lcIterable')}
                         className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id===item.id&&selectedInput?.field==='lcIterable' ? 'border-green-500 bg-green-200' : 'border-green-300 bg-white'}`}/>
                     </div>
@@ -1991,7 +1991,7 @@ const GrizzlyMappingTool = () => {
   const generateCode = () => {
     const lines = [];
 
-    // Convert to PascalCase for function name: "collateral" -> "Collateral", "about_version" -> "AboutVersion", "mismoIdentifiers" -> "MismoIdentifiers"
+    // Convert to PascalCase for function name: "items" -> "Items", "about_version" -> "AboutVersion"
     const toCamelFuncName = (name) => {
       if (!name) return '';
       if (name.includes('_')) {
@@ -2000,7 +2000,7 @@ const GrizzlyMappingTool = () => {
       return name.charAt(0).toUpperCase() + name.slice(1);
     };
 
-    // Human-readable docstring title: "aboutVersion" -> "About Version", "collateral" -> "Collateral"
+    // Human-readable docstring title: "aboutVersion" -> "About Version", "items" -> "Items"
     const toDocTitle = (name) => {
       // Split on underscores or camelCase boundaries
       const words = name
@@ -2177,7 +2177,7 @@ const GrizzlyMappingTool = () => {
 
     // Build inner dict structure for list-comp body.
     // For LC-IF ternary items (isRelative=true), the cleanedTarget is already relative
-    // (e.g. "subjectProperty.address.addressLineText") — use it as-is.
+    // (e.g. "field.nested.value") — use it as-is.
     // For old-style FOR children, strip the rootKey prefix segment.
     const buildInnerDict = (assignments) => {
       const structure = {};
