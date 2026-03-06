@@ -1641,13 +1641,13 @@ const GrizzlyMappingTool = () => {
       const results = [];
       (children || []).forEach(item => {
         if (item.type === 'assignment' && item.target) {
-          // Plain assignment inside list comp
+          // Plain assignment inside list comp — path has rootKey prefix, needs stripping
           const cleaned = cleanPath(item.target);
           const expr = rewriteForExpr(cleanExpr(item.expression || '""'), iterator, iterable);
-          results.push({ cleanedTarget: cleaned, expression: expr });
+          results.push({ cleanedTarget: cleaned, expression: expr, isRelative: false });
         } else if (item.type === 'if' && item.lcTarget) {
-          // LC-IF ternary block: uses flat fields lcTarget / condition / ifExpr / elseExpr
-          const cleaned = cleanPath(item.lcTarget);
+          // LC-IF ternary: lcTarget is already a relative path (no rootKey prefix)
+          const cleaned = item.lcTarget.trim();  // use as-is, no cleanPath stripping
           const cond = rewriteForExpr(cleanExpr(item.condition || 'False'), iterator, iterable);
           const ifVal = item.ifExpr
             ? rewriteForExpr(cleanExpr(item.ifExpr), iterator, iterable)
@@ -1657,7 +1657,8 @@ const GrizzlyMappingTool = () => {
             : '""';
           results.push({
             cleanedTarget: cleaned,
-            expression: `(\n    ${ifVal}\n    if ${cond}\n    else ${elseVal}\n)`
+            expression: `(\n    ${ifVal}\n    if (${cond})\n    else ${elseVal}\n)`,
+            isRelative: true
           });
         }
       });
@@ -1665,18 +1666,25 @@ const GrizzlyMappingTool = () => {
     };
 
     // Build inner dict structure for list-comp body.
-    // Strips path segments so paths become relative to each array item.
-    // e.g. "financialAccounts.accountId" -> ["accountId"], "Collateral.Collateral.subjectProperty.x" -> ["subjectProperty","x"]
+    // For LC-IF ternary items (isRelative=true), the cleanedTarget is already relative
+    // (e.g. "subjectProperty.address.addressLineText") — use it as-is.
+    // For old-style FOR children, strip the rootKey prefix segment.
     const buildInnerDict = (assignments) => {
       const structure = {};
-      assignments.forEach(({ cleanedTarget, expression }) => {
+      assignments.forEach(({ cleanedTarget, expression, isRelative }) => {
         const parts = cleanedTarget.split('.');
-        // Strip array root: 1 segment for "financialAccounts.accountId", 2 for "Collateral.Collateral.subjectProperty..."
-        const innerParts = parts.length > 1 && parts[0] === parts[1]
-          ? parts.slice(2)
-          : parts.length > 1
-            ? parts.slice(1)
-            : parts;
+        let innerParts;
+        if (isRelative) {
+          // Already relative — use full path
+          innerParts = parts;
+        } else {
+          // Strip leading rootKey prefix(es)
+          innerParts = parts.length > 1 && parts[0] === parts[1]
+            ? parts.slice(2)
+            : parts.length > 1
+              ? parts.slice(1)
+              : parts;
+        }
         let current = structure;
         for (let i = 0; i < innerParts.length - 1; i++) {
           if (!current[innerParts[i]]) current[innerParts[i]] = {};
@@ -1779,8 +1787,6 @@ const GrizzlyMappingTool = () => {
           if (assignments.length === 1 && assignments[0]._forMeta) {
             const { iterator, iterable, isFromListComp } = assignments[0]._forMeta;
 
-            // listComp-mode: user already declared the iterable as a Variable, use directly.
-            // Old-style standalone FOR: auto-declare iterVarName.
             let safeIterable;
             if (isFromListComp) {
               safeIterable = `(${cleanExpr(iterable)} or [])`;
@@ -1793,28 +1799,55 @@ const GrizzlyMappingTool = () => {
 
             const innerAssignments = collectForChildren(assignments[0]._forMeta.children, iterator, iterable);
             const innerStructure = buildInnerDict(innerAssignments);
-            const dictLines = generateDict(innerStructure, indent + 2);
 
-            if (dictLines.length === 1) {
-              lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
-              lines.push(`${pre}    "${rootKey}": [${dictLines[0]} for ${iterator} in ${safeIterable}]`);
-              lines.push(`${pre}}`);
-            } else {
-              lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
-              lines.push(`${pre}    "${rootKey}": [`);
-              dictLines.forEach((l, i) => {
-                if (i === 0) {
-                  lines.push(`${pre}        {`);
-                } else if (i === dictLines.length - 1) {
-                  lines.push(`${pre}        }`);
+            // Render the inner item dict with proper indentation.
+            // indent+3 = 3 levels inside: OUTPUT[..] > list > item dict body
+            const renderInnerDict = (obj, depth) => {
+              const i0 = '    '.repeat(depth);
+              const i1 = '    '.repeat(depth + 1);
+              const entries = Object.entries(obj).filter(([k]) => k !== '_directValue');
+              if (entries.length === 0) return [`{}`];
+              const out = ['{'];
+              entries.forEach(([key, val], idx) => {
+                const comma = idx < entries.length - 1 ? ',' : '';
+                if (typeof val === 'string') {
+                  // Multi-line value (ternary): indent each line by i1+4, closing paren at i1
+                  const valLines = val.split('\n');
+                  if (valLines.length === 1) {
+                    out.push(`${i1}"${key}": ${val}${comma}`);
+                  } else {
+                    // valLines: ["(", "    ifVal", "    if ...", "    else ...", ")"]
+                    out.push(`${i1}"${key}": ${valLines[0]}`);
+                    valLines.slice(1, -1).forEach(vl => out.push(`${i1}    ${vl.trim()}`));
+                    // closing paren at i1 level (same as the key), then comma
+                    out.push(`${i1}${valLines[valLines.length-1].trim()}${comma}`);
+                  }
                 } else {
-                  lines.push(`${pre}        ${l.trim()}`);
+                  const childLines = renderInnerDict(val, depth + 1);
+                  if (childLines.length === 1) {
+                    out.push(`${i1}"${key}": ${childLines[0]}${comma}`);
+                  } else {
+                    out.push(`${i1}"${key}": ${childLines[0]}`);
+                    childLines.slice(1, -1).forEach(l => out.push(l));
+                    out.push(`${childLines[childLines.length-1]}${comma}`);
+                  }
                 }
               });
-              lines.push(`${pre}        for ${iterator} in ${safeIterable}`);
-              lines.push(`${pre}    ]`);
-              lines.push(`${pre}}`);
-            }
+              out.push(`${i0}}`);
+              return out;
+            };
+
+            // depth=indent+2: item dict { is at the list item level
+            const itemLines = renderInnerDict(innerStructure, indent + 2);
+            const i2 = '    '.repeat(indent + 2);
+            const i1 = '    '.repeat(indent + 1);
+
+            lines.push(`${pre}OUTPUT["${rootKey}"] = {`);
+            lines.push(`${i1}"${rootKey}": [`);
+            itemLines.forEach(l => lines.push(l));
+            lines.push(`${i2}for ${iterator} in ${safeIterable}`);
+            lines.push(`${i1}]`);
+            lines.push(`${pre}}`);
             return;
           }
 
