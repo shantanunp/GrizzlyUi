@@ -228,6 +228,8 @@ const GrizzlyMappingTool = () => {
   const [baselineModules, setBaselineModules] = useState(null);
   const [modules, setModules] = useState([{ id: uid(), name: 'main', mappings: [] }]);
   const [activeModule, setActiveModule] = useState(0);
+  const [renamingModuleIdx, setRenamingModuleIdx] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const mappings = modules[activeModule]?.mappings || [];
 
@@ -632,10 +634,16 @@ const GrizzlyMappingTool = () => {
     if (type === 'assignment') {
       newItem.target = '';
       newItem.expression = '';
-      newItem.listComp = false; // false = plain expression, true = list comprehension mode
+      newItem.exprType = 'input'; // 'input' | 'static' | 'number' | 'function'
+      newItem.staticValue = '';
+      newItem.funcName = '';
+      newItem.funcArgs = '';
+      newItem.listComp = false;
+      newItem.lcMode = 'dynamic';   // 'dynamic' = FOR loop, 'static' = fixed list
       newItem.lcIterator = 'item';
       newItem.lcIterable = '';
-      newItem.lcChildren = []; // items inside the list comp (assignments + ifs)
+      newItem.lcChildren = [];      // used by dynamic mode
+      newItem.lcElements = [{ id: uid(), fields: [] }]; // used by static mode — each element = one list item
     } else if (type === 'variable') {
       newItem.varName = '';
       newItem.expression = '';
@@ -888,7 +896,79 @@ const GrizzlyMappingTool = () => {
     updateModuleMappings(activeModule, updateInItems(mappings));
   };
 
-  const addLcChild = (assignmentId, type) => {
+  // ── Static list element helpers ──────────────────────────────────────────
+  const addLcElement = (assignmentId) => {
+    const newEl = { id: uid(), fields: [] };
+    const update = (items) => items.map(item => {
+      if (item.id === assignmentId) return { ...item, lcElements: [...(item.lcElements || []), newEl] };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: update(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: update(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: update(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, update(mappings));
+  };
+
+  const deleteLcElement = (assignmentId, elId) => {
+    const update = (items) => items.map(item => {
+      if (item.id === assignmentId) return { ...item, lcElements: (item.lcElements || []).filter(e => e.id !== elId) };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: update(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: update(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: update(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, update(mappings));
+  };
+
+  const addLcElementField = (assignmentId, elId) => {
+    const newField = { id: uid(), target: '', expression: '', exprType: 'input', staticValue: '', funcName: 'now', funcArgs: '' };
+    const update = (items) => items.map(item => {
+      if (item.id === assignmentId) return { ...item, lcElements: (item.lcElements || []).map(e => e.id === elId ? { ...e, fields: [...(e.fields || []), newField] } : e) };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: update(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: update(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: update(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, update(mappings));
+  };
+
+  const updateLcElementField = (assignmentId, elId, fieldId, key, value) => {
+    const update = (items) => items.map(item => {
+      if (item.id === assignmentId) return {
+        ...item,
+        lcElements: (item.lcElements || []).map(e => e.id !== elId ? e : {
+          ...e,
+          fields: (e.fields || []).map(f => f.id !== fieldId ? f : { ...f, [key]: value })
+        })
+      };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: update(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: update(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: update(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, update(mappings));
+  };
+
+  const deleteLcElementField = (assignmentId, elId, fieldId) => {
+    const update = (items) => items.map(item => {
+      if (item.id === assignmentId) return {
+        ...item,
+        lcElements: (item.lcElements || []).map(e => e.id !== elId ? e : { ...e, fields: (e.fields || []).filter(f => f.id !== fieldId) })
+      };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: update(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: update(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: update(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, update(mappings));
+  };
+
+    const addLcChild = (assignmentId, type) => {
     const newChild = { id: generateId(), type };
     if (type === 'assignment') { newChild.target = ''; newChild.expression = ''; }
     else if (type === 'if') { newChild.lcTarget = ''; newChild.condition = ''; newChild.ifExpr = ''; newChild.elseExpr = ''; }
@@ -1145,100 +1225,327 @@ const GrizzlyMappingTool = () => {
       };
 
       if (item.listComp) {
-        // ── LIST COMP mode ──────────────────────────────────────────────────────
+        // ── LIST mode: Dynamic (FOR loop) or Static (literal items) ─────────────
+        const lcMode = item.lcMode || 'dynamic';
         const lcExpanded = expandedBlocks.has(item.id + '_lc');
+
+        const LC_FUNCS = [
+          {name:'now',       label:'now()',                args:false},
+          {name:'formatDate',label:'formatDate(date,fmt)', args:true, ph:'now(), "yyyy-MM-dd HH:mm:ss"'},
+          {name:'today',     label:'today()',              args:false},
+          {name:'uuid',      label:'uuid()',               args:false},
+          {name:'upper',     label:'upper(text)',          args:true, ph:'item?.field'},
+          {name:'lower',     label:'lower(text)',          args:true, ph:'item?.field'},
+          {name:'concat',    label:'concat(a,b)',          args:true, ph:'item?.a, item?.b'},
+        ];
+        const valTypes = { input:'⬅ Input', static:'"…" Text', number:'# Num', function:'ƒ Fn' };
+        const valColors = {
+          input:   'border-green-300 bg-green-50 text-green-700',
+          static:  'border-slate-300 bg-white text-slate-600',
+          number:  'border-blue-300 bg-blue-50 text-blue-700',
+          function:'border-orange-300 bg-orange-50 text-orange-700',
+        };
+
+        // Shared field row — used in both static elements and dynamic FOR body
+        const renderFieldRow = (fid, field, onUpdate, onDelete) => {
+          const et = field.exprType || 'input';
+          const sync = (type, vals) => {
+            const upd = { ...field, ...vals, exprType: type };
+            if (type === 'static')   upd.expression = `"${(vals.staticValue||'').replace(/"/g,'\\"')}"`;
+            if (type === 'number')   upd.expression = vals.staticValue || '0';
+            if (type === 'function') { const a=(vals.funcArgs||'').trim(); upd.expression = a ? `${vals.funcName||'now'}(${a})` : `${vals.funcName||'now'}()`; }
+            onUpdate(upd);
+          };
+          const selFn = LC_FUNCS.find(f => f.name === (field.funcName||'now')) || LC_FUNCS[0];
+          return (
+            <div key={fid} className="border border-slate-100 rounded-lg bg-white overflow-hidden mb-1.5">
+              {/* field path row */}
+              <div className="flex items-center gap-2 px-2 pt-1.5 pb-0.5">
+                <span className="text-xs text-slate-300 w-10 shrink-0">field</span>
+                <input type="text"
+                  placeholder="path — e.g.  version   or   createDatetime.datetime"
+                  value={field.target || ''}
+                  onChange={e => onUpdate({ ...field, target: e.target.value })}
+                  className="flex-1 px-2 py-1 border border-yellow-200 rounded text-xs font-mono bg-yellow-50 focus:outline-none" />
+                <button onClick={onDelete} className="p-1 text-red-200 hover:text-red-400 shrink-0"><Trash2 className="w-3 h-3"/></button>
+              </div>
+              {/* value type + input row */}
+              <div className="flex items-center gap-1.5 px-2 pb-1.5 pt-0.5 flex-wrap">
+                <span className="text-xs text-slate-300 w-10 shrink-0">value</span>
+                <div className="flex gap-1">
+                  {Object.entries(valTypes).map(([t, lbl]) => (
+                    <button key={t}
+                      onClick={() => sync(t, { staticValue: field.staticValue||'', funcName: field.funcName||'now', funcArgs: field.funcArgs||'' })}
+                      className={`px-1.5 py-0.5 rounded text-xs border transition-colors ${et===t ? valColors[t] : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}>
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+                {et==='input'    && <input type="text"   placeholder="drag from Input or type path…" value={field.expression||''}  onChange={e=>onUpdate({...field,expression:e.target.value})}                                       className="flex-1 min-w-0 px-2 py-1 border border-green-300 rounded text-xs font-mono bg-green-50 focus:outline-none"/>}
+                {et==='static'   && <input type="text"   placeholder="type the value, e.g.  1.0.0"  value={field.staticValue||''} onChange={e=>sync('static',  {staticValue:e.target.value, funcName:field.funcName||'now', funcArgs:field.funcArgs||''})} className="flex-1 min-w-0 px-2 py-1 border border-slate-300 rounded text-xs bg-white focus:outline-none"/>}
+                {et==='number'   && <input type="number" placeholder="0"                            value={field.staticValue||''} onChange={e=>sync('number',  {staticValue:e.target.value, funcName:field.funcName||'now', funcArgs:field.funcArgs||''})} className="flex-1 min-w-0 px-2 py-1 border border-blue-300 rounded text-xs font-mono bg-blue-50 focus:outline-none"/>}
+                {et==='function' && (
+                  <div className="flex gap-1 flex-1 min-w-0">
+                    <select value={field.funcName||'now'} onChange={e=>sync('function',{funcName:e.target.value,funcArgs:field.funcArgs||'',staticValue:''})} className="px-1.5 py-1 border border-orange-300 rounded text-xs bg-orange-50 focus:outline-none shrink-0">
+                      {LC_FUNCS.map(f=><option key={f.name} value={f.name}>{f.label}</option>)}
+                    </select>
+                    {selFn.args && <input type="text" placeholder={selFn.ph||'args…'} value={field.funcArgs||''} onChange={e=>sync('function',{funcName:field.funcName||'now',funcArgs:e.target.value,staticValue:''})} className="flex-1 min-w-0 px-2 py-1 border border-orange-200 rounded text-xs font-mono bg-white focus:outline-none"/>}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        };
+
         return (
           <div key={item.id} className="group rounded-lg my-2" style={{ marginLeft: `${indentWidth}px` }}>
             <div className="border-2 border-blue-400 rounded-xl overflow-hidden shadow-sm">
-              {/* Header row: target + mode toggle + delete */}
+
+              {/* Header: OUTPUT key + mode badge + Plain + delete */}
               <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border-b border-blue-200">
                 <Move className="w-4 h-4 text-blue-300 cursor-move shrink-0" />
                 <div onDrop={handleTargetDrop} onDragOver={handleDragOver} className="flex-1">
-                  <input type="text" placeholder="OUTPUT key (e.g. Collateral)" value={item.target}
-                    onFocus={e => handleInputFocus(e, item.id, 'target')} onChange={e => handleInputChange(e, item.id, 'target')}
-                    className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id === item.id && selectedInput?.field === 'target' ? 'border-blue-500 bg-yellow-100' : 'border-blue-300 bg-yellow-50'}`} />
+                  <input type="text" placeholder="OUTPUT key  (e.g.  AboutVersion)"
+                    value={item.target}
+                    onFocus={e => handleInputFocus(e, item.id, 'target')}
+                    onChange={e => handleInputChange(e, item.id, 'target')}
+                    className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id===item.id && selectedInput?.field==='target' ? 'border-blue-500 bg-yellow-100' : 'border-blue-300 bg-yellow-50'}`} />
                 </div>
-                <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded shrink-0">=  [ … ]</span>
-                <button onClick={() => updateItem(item.id, 'listComp', false)} title="Switch to plain expression mode"
-                  className="px-2 py-1 text-xs text-blue-600 border border-blue-300 rounded hover:bg-blue-100 shrink-0">Plain</button>
+                <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded shrink-0">= [ … ]</span>
+                <button onClick={() => updateItem(item.id,'listComp',false)} className="px-2 py-1 text-xs text-blue-500 border border-blue-300 rounded hover:bg-blue-100 shrink-0">Plain</button>
                 <button onClick={() => deleteItem(item.id)} className="p-1.5 text-red-400 hover:text-red-600 rounded shrink-0"><Trash2 className="w-4 h-4"/></button>
               </div>
 
-              {/* FOR header: iterator IN iterable */}
-              <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border-b border-green-200">
-                <button onClick={() => toggleBlock(item.id + '_lc')} className="p-0.5 text-green-700">
-                  {lcExpanded ? <ChevronDown className="w-4 h-4"/> : <ChevronRight className="w-4 h-4"/>}
+              {/* Mode switcher */}
+              <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider shrink-0 mr-1">List type</span>
+                <button onClick={() => updateItem(item.id,'lcMode','static')}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${lcMode==='static' ? 'bg-amber-100 border-amber-400 text-amber-800' : 'bg-white border-slate-300 text-slate-500 hover:border-slate-400'}`}>
+                  📋 Static — fixed items I fill in
                 </button>
-                <span className="font-bold text-green-800 text-sm">FOR</span>
-                <input type="text" placeholder="item" value={item.lcIterator || 'item'}
-                  onChange={e => updateItem(item.id, 'lcIterator', e.target.value)}
-                  className="w-24 px-2 py-1.5 border border-green-300 rounded text-sm font-mono bg-white focus:outline-none" />
-                <span className="font-bold text-green-800 text-sm">IN</span>
-                <div className="flex-1" onDrop={handleLcIterableDrop} onDragOver={handleDragOver}>
-                  <input type="text" placeholder="Drag array field or type (e.g. input.collateral)" value={item.lcIterable || ''}
-                    onFocus={e => handleInputFocus(e, item.id, 'lcIterable')} onChange={e => handleInputChange(e, item.id, 'lcIterable')}
-                    className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id === item.id && selectedInput?.field === 'lcIterable' ? 'border-green-500 bg-green-200' : 'border-green-300 bg-white'}`} />
-                </div>
+                <button onClick={() => updateItem(item.id,'lcMode','dynamic')}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${lcMode==='dynamic' ? 'bg-green-100 border-green-400 text-green-800' : 'bg-white border-slate-300 text-slate-500 hover:border-slate-400'}`}>
+                  🔄 Dynamic — loop over input array
+                </button>
               </div>
 
-              {/* Body: children inside the list comp */}
-              {lcExpanded && (
+              {/* ══ STATIC body ════════════════════════════════════════════════════ */}
+              {lcMode==='static' && (
                 <div className="p-3 bg-white space-y-2">
-                  {(item.lcChildren || []).length === 0 && (
-                    <p className="text-xs text-slate-400 text-center py-2">Add Assignments or IF/ELSE inside the list comprehension body</p>
-                  )}
-                  {(item.lcChildren || []).map(child => {
-                    if (child.type === 'if') return renderLcIf(child);
-                    // Plain assignment inside lc
+                  {(item.lcElements||[{id:'_default',fields:[]}]).map((el, elIdx) => {
+                    const elExpanded = expandedBlocks.has(el.id) || elIdx===0;
                     return (
-                      <div key={child.id} className="flex items-center gap-2 p-2 border border-slate-200 rounded-lg bg-slate-50">
-                        <div className="flex-1 grid grid-cols-2 gap-2">
-                          <input type="text" placeholder="Output field path" value={child.target || ''}
-                            onChange={e => updateLcChild(item.id, child.id, 'target', e.target.value)}
-                            className="px-2 py-1.5 border border-slate-200 rounded text-xs font-mono bg-yellow-50 focus:outline-none" />
-                          <input type="text" placeholder="Value (use iterator var, e.g. item?.name)" value={child.expression || ''}
-                            onChange={e => updateLcChild(item.id, child.id, 'expression', e.target.value)}
-                            className="px-2 py-1.5 border border-slate-200 rounded text-xs font-mono bg-green-50 focus:outline-none" />
+                      <div key={el.id} className="border border-amber-200 rounded-xl overflow-hidden">
+                        {/* element header */}
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border-b border-amber-100">
+                          <button onClick={() => toggleBlock(el.id)} className="p-0.5 text-amber-500">
+                            {elExpanded ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
+                          </button>
+                          <span className="text-xs font-bold text-amber-800">Item {elIdx+1}</span>
+                          <span className="text-xs text-amber-400 ml-1">({(el.fields||[]).length} field{(el.fields||[]).length!==1?'s':''})</span>
+                          <div className="flex-1"/>
+                          {(item.lcElements||[]).length > 1 && (
+                            <button onClick={() => deleteLcElement(item.id, el.id)} className="p-1 text-red-300 hover:text-red-500"><Trash2 className="w-3 h-3"/></button>
+                          )}
                         </div>
-                        <button onClick={() => deleteLcChild(item.id, child.id)} className="p-1 text-red-400 hover:text-red-600"><Trash2 className="w-3 h-3"/></button>
+                        {/* element fields */}
+                        {elExpanded && (
+                          <div className="p-2">
+                            {(el.fields||[]).length===0 && (
+                              <p className="text-xs text-slate-300 text-center py-3">No fields yet — click + Add Field below</p>
+                            )}
+                            {(el.fields||[]).map(field =>
+                              renderFieldRow(
+                                field.id, field,
+                                (updated) => { Object.entries(updated).forEach(([k,v]) => { if(k!=='id') updateLcElementField(item.id, el.id, field.id, k, v); }); },
+                                () => deleteLcElementField(item.id, el.id, field.id)
+                              )
+                            )}
+                            <button onClick={() => addLcElementField(item.id, el.id)}
+                              className="w-full mt-1 px-3 py-1.5 border border-dashed border-amber-300 text-amber-600 rounded-lg text-xs hover:bg-amber-50 flex items-center justify-center gap-1">
+                              <Plus className="w-3 h-3"/> Add Field
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
-                  <div className="flex gap-2 pt-1">
-                    <button onClick={() => addLcChild(item.id, 'assignment')} className="px-3 py-1.5 bg-white border border-slate-300 text-slate-600 rounded text-xs hover:bg-slate-50 flex items-center gap-1"><Plus className="w-3 h-3"/> Assignment</button>
-                    <button onClick={() => addLcChild(item.id, 'if')} className="px-3 py-1.5 bg-white border border-purple-300 text-purple-700 rounded text-xs hover:bg-purple-50 flex items-center gap-1"><Plus className="w-3 h-3"/> IF / ELSE</button>
-                  </div>
+                  <button onClick={() => addLcElement(item.id)}
+                    className="w-full px-3 py-2 border-2 border-dashed border-amber-300 text-amber-700 rounded-xl text-xs hover:bg-amber-50 flex items-center justify-center gap-2 font-medium">
+                    <Plus className="w-3 h-3"/> Add List Item
+                  </button>
                 </div>
               )}
+
+              {/* ══ DYNAMIC body (FOR loop) ════════════════════════════════════════ */}
+              {lcMode==='dynamic' && (
+                <>
+                  {/* FOR iterator IN iterable */}
+                  <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border-b border-green-200">
+                    <button onClick={() => toggleBlock(item.id+'_lc')} className="p-0.5 text-green-700">
+                      {lcExpanded ? <ChevronDown className="w-4 h-4"/> : <ChevronRight className="w-4 h-4"/>}
+                    </button>
+                    <span className="font-bold text-green-800 text-sm">FOR</span>
+                    <input type="text" placeholder="item" value={item.lcIterator||'item'}
+                      onChange={e => updateItem(item.id,'lcIterator',e.target.value)}
+                      className="w-24 px-2 py-1.5 border border-green-300 rounded text-sm font-mono bg-white focus:outline-none"/>
+                    <span className="font-bold text-green-800 text-sm">IN</span>
+                    <div className="flex-1" onDrop={handleLcIterableDrop} onDragOver={handleDragOver}>
+                      <input type="text" placeholder="Drag array field or type (e.g. input.collateral)" value={item.lcIterable||''}
+                        onFocus={e => handleInputFocus(e, item.id,'lcIterable')} onChange={e => handleInputChange(e, item.id,'lcIterable')}
+                        className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id===item.id&&selectedInput?.field==='lcIterable' ? 'border-green-500 bg-green-200' : 'border-green-300 bg-white'}`}/>
+                    </div>
+                  </div>
+                  {/* FOR body */}
+                  {lcExpanded && (
+                    <div className="p-3 bg-white space-y-2">
+                      {(item.lcChildren||[]).length===0 && (
+                        <p className="text-xs text-slate-400 text-center py-3">Add fields or IF/ELSE inside the loop body</p>
+                      )}
+                      {(item.lcChildren||[]).map(child => {
+                        if (child.type==='if') return renderLcIf(child);
+                        return renderFieldRow(
+                          child.id, child,
+                          (updated) => { Object.entries(updated).forEach(([k,v]) => { if(k!=='id') updateLcChild(item.id,child.id,k,v); }); },
+                          () => deleteLcChild(item.id, child.id)
+                        );
+                      })}
+                      <div className="flex gap-2 pt-1">
+                        <button onClick={() => addLcChild(item.id,'assignment')} className="px-3 py-1.5 bg-white border border-green-300 text-green-700 rounded text-xs hover:bg-green-50 flex items-center gap-1"><Plus className="w-3 h-3"/> Add Field</button>
+                        <button onClick={() => addLcChild(item.id,'if')}        className="px-3 py-1.5 bg-white border border-purple-300 text-purple-700 rounded text-xs hover:bg-purple-50 flex items-center gap-1"><Plus className="w-3 h-3"/> IF / ELSE</button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
             </div>
           </div>
         );
       }
 
       // ── PLAIN expression mode ────────────────────────────────────────────────
-      return (
-        <div key={item.id} className="group hover:bg-blue-50 rounded-lg transition-colors" style={{ marginLeft: `${indentWidth}px` }}>
-          <div className="flex items-center gap-2 p-3 border border-gray-200 rounded-lg bg-white">
-            <Move className="w-4 h-4 text-gray-400 cursor-move" />
-            <div className="flex-1 grid grid-cols-2 gap-3">
-              <div onDrop={handleTargetDrop} onDragOver={handleDragOver} className="relative">
-                <input type="text" placeholder="Target (Output schema)" value={item.target}
-                  onFocus={e => handleInputFocus(e, item.id, 'target')} onChange={e => handleInputChange(e, item.id, 'target')}
-                  className={`w-full px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm ${selectedInput?.id === item.id && selectedInput?.field === 'target' ? 'border-blue-500 bg-yellow-100' : 'border-gray-300 bg-yellow-50'}`} />
-              </div>
-              <div onDrop={handleExpressionDrop} onDragOver={handleDragOver} className="relative">
-                <input type="text" placeholder="Expression (Input schema)" value={item.expression}
-                  onFocus={e => handleInputFocus(e, item.id, 'expression')} onChange={e => handleInputChange(e, item.id, 'expression')}
-                  className={`w-full px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm font-mono ${selectedInput?.id === item.id && selectedInput?.field === 'expression' ? 'border-blue-500 bg-green-100' : 'border-gray-300 bg-green-50'}`} />
-              </div>
+      const exprType = item.exprType || 'input';
+
+      // Sync derived expression into item.expression based on exprType
+      const syncExpr = (type, vals) => {
+        const upd = { ...vals, exprType: type };
+        if (type === 'static') upd.expression = `"${(vals.staticValue || '').replace(/"/g, '\\"')}"`;
+        else if (type === 'number') upd.expression = vals.staticValue || '0';
+        else if (type === 'function') {
+          const args = (vals.funcArgs || '').trim();
+          upd.expression = args ? `${vals.funcName || 'now'}(${args})` : `${vals.funcName || 'now'}()`;
+        }
+        // for 'input' type, expression is managed by handleInputChange
+        Object.entries(upd).forEach(([k, v]) => updateItem(item.id, k, v));
+      };
+
+      const BUILTIN_FUNCTIONS = [
+        { name: 'now', label: 'now()', desc: 'Current datetime', args: false },
+        { name: 'formatDate', label: 'formatDate(date, fmt)', desc: 'Format a date', args: true, argsPlaceholder: 'now(), "yyyy-MM-dd HH:mm:ss"' },
+        { name: 'today', label: 'today()', desc: "Today's date", args: false },
+        { name: 'uuid', label: 'uuid()', desc: 'Generate a UUID', args: false },
+        { name: 'upper', label: 'upper(text)', desc: 'Uppercase string', args: true, argsPlaceholder: 'input.field' },
+        { name: 'lower', label: 'lower(text)', desc: 'Lowercase string', args: true, argsPlaceholder: 'input.field' },
+        { name: 'concat', label: 'concat(a, b)', desc: 'Concatenate strings', args: true, argsPlaceholder: 'input.a, input.b' },
+        { name: 'coalesce', label: 'coalesce(a, b)', desc: 'First non-null value', args: true, argsPlaceholder: 'input.field, "default"' },
+      ];
+
+      const typeConfig = {
+        input:    { label: '⬅ From Input',   bg: 'bg-green-50',  border: 'border-green-300',  text: 'text-green-700' },
+        static:   { label: '"…" Static Text', bg: 'bg-white',     border: 'border-slate-300',  text: 'text-slate-700' },
+        number:   { label: '# Number',        bg: 'bg-blue-50',   border: 'border-blue-300',   text: 'text-blue-700'  },
+        function: { label: 'ƒ Function',       bg: 'bg-orange-50', border: 'border-orange-300', text: 'text-orange-700'},
+      };
+
+      const renderValueInput = () => {
+        if (exprType === 'input') {
+          return (
+            <div onDrop={handleExpressionDrop} onDragOver={handleDragOver} className="flex-1 relative">
+              <input type="text" placeholder="Drag from Input schema or type path…" value={item.expression}
+                onFocus={e => handleInputFocus(e, item.id, 'expression')} onChange={e => handleInputChange(e, item.id, 'expression')}
+                className={`w-full px-3 py-2 border rounded focus:outline-none text-sm font-mono ${selectedInput?.id === item.id && selectedInput?.field === 'expression' ? 'border-green-500 bg-green-100' : 'border-green-300 bg-green-50'}`} />
             </div>
-            {/* Toggle to list comp mode */}
-            <button onClick={() => { updateItem(item.id, 'listComp', true); setExpandedBlocks(prev => new Set([...prev, item.id + '_lc'])); }}
-              title="Switch to List Comprehension mode (for array outputs)"
-              className="px-2 py-1 text-xs text-blue-600 border border-blue-200 rounded hover:bg-blue-50 shrink-0 font-mono">[ ]</button>
-            <button onClick={() => deleteItem(item.id)} className="p-2 text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-              <Trash2 className="w-4 h-4" />
-            </button>
+          );
+        }
+        if (exprType === 'static') {
+          return (
+            <div className="flex-1 relative">
+              <input type="text" placeholder='Type the static text value, e.g.  1.0.0'
+                value={item.staticValue || ''}
+                onChange={e => syncExpr('static', { staticValue: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-300 rounded focus:outline-none text-sm bg-white" />
+              <span className="absolute right-2 top-2 text-xs text-slate-400 pointer-events-none">text</span>
+            </div>
+          );
+        }
+        if (exprType === 'number') {
+          return (
+            <div className="flex-1 relative">
+              <input type="number" placeholder="0"
+                value={item.staticValue || ''}
+                onChange={e => syncExpr('number', { staticValue: e.target.value })}
+                className="w-full px-3 py-2 border border-blue-300 rounded focus:outline-none text-sm bg-blue-50 font-mono" />
+            </div>
+          );
+        }
+        if (exprType === 'function') {
+          const selFn = BUILTIN_FUNCTIONS.find(f => f.name === (item.funcName || 'now')) || BUILTIN_FUNCTIONS[0];
+          return (
+            <div className="flex-1 flex gap-2">
+              <select value={item.funcName || 'now'}
+                onChange={e => syncExpr('function', { funcName: e.target.value, funcArgs: item.funcArgs || '', staticValue: item.staticValue || '' })}
+                className="px-2 py-2 border border-orange-300 rounded text-sm bg-orange-50 focus:outline-none shrink-0">
+                {BUILTIN_FUNCTIONS.map(f => <option key={f.name} value={f.name}>{f.label}</option>)}
+              </select>
+              {selFn.args && (
+                <input type="text" placeholder={selFn.argsPlaceholder || 'arguments…'}
+                  value={item.funcArgs || ''}
+                  onChange={e => syncExpr('function', { funcName: item.funcName || 'now', funcArgs: e.target.value, staticValue: item.staticValue || '' })}
+                  className="flex-1 px-3 py-2 border border-orange-200 rounded text-sm font-mono bg-white focus:outline-none" />
+              )}
+              {!selFn.args && <span className="flex-1 px-3 py-2 text-xs text-orange-500 flex items-center">{selFn.desc}</span>}
+            </div>
+          );
+        }
+        return null;
+      };
+
+      return (
+        <div key={item.id} className="group rounded-lg transition-colors my-1" style={{ marginLeft: `${indentWidth}px` }}>
+          <div className="flex flex-col gap-0 border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden">
+            {/* Row 1: target field */}
+            <div className="flex items-center gap-2 px-3 pt-2.5 pb-1">
+              <Move className="w-3.5 h-3.5 text-gray-300 cursor-move shrink-0" />
+              <span className="text-xs text-slate-400 shrink-0 w-14">Output</span>
+              <div onDrop={handleTargetDrop} onDragOver={handleDragOver} className="flex-1">
+                <input type="text" placeholder="Output field  (drag from Output schema or type)" value={item.target}
+                  onFocus={e => handleInputFocus(e, item.id, 'target')} onChange={e => handleInputChange(e, item.id, 'target')}
+                  className={`w-full px-3 py-1.5 border rounded focus:outline-none text-sm ${selectedInput?.id === item.id && selectedInput?.field === 'target' ? 'border-blue-500 bg-yellow-100' : 'border-yellow-300 bg-yellow-50'}`} />
+              </div>
+              {/* List comp toggle */}
+              <button onClick={() => { updateItem(item.id, 'listComp', true); setExpandedBlocks(prev => new Set([...prev, item.id + '_lc'])); }}
+                title="Switch to List Comprehension mode (for array outputs)"
+                className="px-2 py-1 text-xs text-blue-500 border border-blue-200 rounded hover:bg-blue-50 shrink-0 font-mono">[ … ]</button>
+              <button onClick={() => deleteItem(item.id)} className="p-1.5 text-gray-300 hover:text-red-500 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {/* Row 2: value type selector + value input */}
+            <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
+              <span className="w-3.5 shrink-0" />
+              <span className="text-xs text-slate-400 shrink-0 w-14">Value</span>
+              {/* Type pill buttons */}
+              <div className="flex gap-1 shrink-0">
+                {Object.entries(typeConfig).map(([t, cfg]) => (
+                  <button key={t} onClick={() => { updateItem(item.id, 'exprType', t); if (t !== 'input') syncExpr(t, { staticValue: item.staticValue || '', funcName: item.funcName || 'now', funcArgs: item.funcArgs || '' }); }}
+                    className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${exprType === t ? `${cfg.bg} ${cfg.border} ${cfg.text} shadow-sm` : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}>
+                    {cfg.label}
+                  </button>
+                ))}
+              </div>
+              {renderValueInput()}
+            </div>
           </div>
         </div>
       );
@@ -1707,15 +2014,30 @@ const GrizzlyMappingTool = () => {
           const cleanedTarget = cleanPath(item.target);
           const rootKey = rootKeyOf(cleanedTarget);
           if (currentGroup) { groups.push(currentGroup); currentGroup = null; }
-          groups.push({
-            rootKey,
-            assignments: [{
-              type: 'assignment',
-              cleanedTarget: `${rootKey}.__listComp__`,
-              expression: '',
-              _forMeta: { iterator: item.lcIterator || 'item', iterable: item.lcIterable || '', children: item.lcChildren || [], isFromListComp: true }
-            }]
-          });
+          const lcMode = item.lcMode || 'dynamic';
+          if (lcMode === 'static') {
+            // Static list: emit a literal [ {...}, {...} ] with no FOR loop
+            groups.push({
+              rootKey,
+              assignments: [{
+                type: 'assignment',
+                cleanedTarget: `${rootKey}.__staticList__`,
+                expression: '',
+                _staticMeta: { elements: item.lcElements || [], rootKey }
+              }]
+            });
+          } else {
+            // Dynamic list: FOR loop / list comprehension
+            groups.push({
+              rootKey,
+              assignments: [{
+                type: 'assignment',
+                cleanedTarget: `${rootKey}.__listComp__`,
+                expression: '',
+                _forMeta: { iterator: item.lcIterator || 'item', iterable: item.lcIterable || '', children: item.lcChildren || [], isFromListComp: true }
+              }]
+            });
+          }
           return;
         }
         if (item.type === 'assignment' && item.target) {
@@ -1777,13 +2099,77 @@ const GrizzlyMappingTool = () => {
           const { rootKey, assignments } = group;
 
           // Single direct assignment (no nesting)
-          if (assignments.length === 1 && !assignments[0].cleanedTarget.includes('.') && !assignments[0]._forMeta) {
+          if (assignments.length === 1 && !assignments[0].cleanedTarget.includes('.') && !assignments[0]._forMeta && !assignments[0]._staticMeta) {
             const expr = forCtx ? rewriteForExpr(assignments[0].expression, forCtx.iterator, forCtx.iterable) : assignments[0].expression;
             lines.push(`${pre}OUTPUT["${rootKey}"] = ${expr}`);
             return;
           }
 
-          // For-loop → list comprehension hoisted to OUTPUT["key"] = [...]
+          // Static list → OUTPUT["key"] = { "key": [{...}, {...}] }
+          if (assignments.length === 1 && assignments[0]._staticMeta) {
+            const { elements, rootKey: rk } = assignments[0]._staticMeta;
+
+            // Build one Python dict literal per element
+            const renderStaticDict = (fields, depth) => {
+              const i0 = '    '.repeat(depth);
+              const i1 = '    '.repeat(depth + 1);
+              if (!fields || fields.length === 0) return [`${i0}{}`];
+              // Group fields into nested structure
+              const struct = {};
+              fields.forEach(f => {
+                if (!f.target) return;
+                const parts = f.target.trim().split('.');
+                let cur = struct;
+                for (let i = 0; i < parts.length - 1; i++) {
+                  if (!cur[parts[i]]) cur[parts[i]] = {};
+                  cur = cur[parts[i]];
+                }
+                cur[parts[parts.length - 1]] = f.expression || '""';
+              });
+              const dictToLines = (obj, d) => {
+                const ii0 = '    '.repeat(d);
+                const ii1 = '    '.repeat(d + 1);
+                const ents = Object.entries(obj);
+                if (ents.length === 0) return [`${ii0}{}`];
+                const out = [`${ii0}{`];
+                ents.forEach(([k, v], idx) => {
+                  const comma = idx < ents.length - 1 ? ',' : '';
+                  if (typeof v === 'string') {
+                    out.push(`${ii1}"${k}": ${v}${comma}`);
+                  } else {
+                    const child = dictToLines(v, d + 1);
+                    out.push(`${ii1}"${k}": ${child[0].trim()}`);
+                    child.slice(1, -1).forEach(l => out.push(l));
+                    out.push(`${child[child.length-1]}${comma}`);
+                  }
+                });
+                out.push(`${ii0}}`);
+                return out;
+              };
+              return dictToLines(struct, depth);
+            };
+
+            const i1 = '    '.repeat(indent + 1);
+            const i2 = '    '.repeat(indent + 2);
+            lines.push(`${pre}OUTPUT["${rk}"] = {`);
+            lines.push(`${i1}"${rk}": [`);
+            (elements || []).forEach((el, elIdx) => {
+              const elLines = renderStaticDict(el.fields || [], indent + 2);
+              const isLast = elIdx === (elements.length - 1);
+              elLines.forEach((l, li) => {
+                if (li === elLines.length - 1) {
+                  lines.push(`${l}${isLast ? '' : ','}`);
+                } else {
+                  lines.push(l);
+                }
+              });
+            });
+            lines.push(`${i1}]`);
+            lines.push(`${pre}}`);
+            return;
+          }
+
+                    // For-loop → list comprehension hoisted to OUTPUT["key"] = [...]
           if (assignments.length === 1 && assignments[0]._forMeta) {
             const { iterator, iterable, isFromListComp } = assignments[0]._forMeta;
 
@@ -2125,14 +2511,31 @@ const GrizzlyMappingTool = () => {
               <div className="flex flex-wrap items-center gap-1">
                 {modules.map((mod, idx) => (
                   <div key={mod.id} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setActiveModule(idx)}
-                      className={`px-2.5 py-1 rounded text-xs font-medium ${activeModule === idx ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                    >
-                      {mod.name === 'main' ? 'main' : mod.name}
-                    </button>
-                    {modules.length > 1 && mod.name !== 'main' && (
+                    {renamingModuleIdx === idx ? (
+                      <input
+                        autoFocus
+                        type="text"
+                        value={renameValue}
+                        onChange={e => setRenameValue(e.target.value)}
+                        onBlur={() => { if (renameValue.trim()) updateModuleName(idx, renameValue.trim()); setRenamingModuleIdx(null); }}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { if (renameValue.trim()) updateModuleName(idx, renameValue.trim()); setRenamingModuleIdx(null); }
+                          if (e.key === 'Escape') setRenamingModuleIdx(null);
+                        }}
+                        className="px-2 py-0.5 rounded text-xs font-medium border border-slate-400 bg-white w-28 focus:outline-none"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setActiveModule(idx)}
+                        onDoubleClick={() => { if (mod.name !== 'main') { setRenamingModuleIdx(idx); setRenameValue(mod.name); } }}
+                        title={mod.name !== 'main' ? 'Double-click to rename' : undefined}
+                        className={`px-2.5 py-1 rounded text-xs font-medium ${activeModule === idx ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >
+                        {mod.name === 'main' ? 'main' : mod.name}
+                      </button>
+                    )}
+                    {modules.length > 1 && mod.name !== 'main' && renamingModuleIdx !== idx && (
                       <button type="button" onClick={() => deleteModule(idx)} className="p-0.5 text-slate-400 hover:text-red-600"><X className="w-3 h-3" /></button>
                     )}
                   </div>
