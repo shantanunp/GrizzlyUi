@@ -94,38 +94,205 @@ const jsonToSchema = (obj) => {
   return { type: typeof obj };
 };
 
+// ── Parse a Grizzly template back into UI model ──────────────────────────────
 const parseTemplate = (pythonCode) => {
   const lines = pythonCode.split('\n');
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  // Parse a scalar Python value into exprType fields
+  const parseScalar = (raw) => {
+    raw = raw.trim();
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      const val = raw.slice(1, -1);
+      return { exprType: 'static', staticValue: val, expression: raw, funcName: 'now', funcArgs: '' };
+    }
+    if (/^-?\d+(\.\d+)?$/.test(raw)) {
+      return { exprType: 'number', staticValue: raw, expression: raw, funcName: 'now', funcArgs: '' };
+    }
+    const fnMatch = raw.match(/^([a-zA-Z_]\w*)\((.+)\)$/s);
+    if (fnMatch && !/^(INPUT|input)/.test(raw)) {
+      const KNOWN = ['now','formatDate','today','uuid','upper','lower','concat','coalesce'];
+      const name = fnMatch[1];
+      const args = fnMatch[2].trim();
+      if (KNOWN.includes(name)) {
+        return { exprType: 'function', funcName: name, funcArgs: args, expression: raw, staticValue: '' };
+      }
+    }
+    const normalized = raw.replace(/^INPUT\??\./i, 'input.');
+    return { exprType: 'input', expression: normalized, staticValue: '', funcName: 'now', funcArgs: '' };
+  };
+
+  // Detect multi-line ternary: ( ifVal \n if (cond) \n else elseVal )
+  const parseTernary = (text) => {
+    const m = text.match(/\(\s*([\s\S]+?)\s+if\s+\(([\s\S]+?)\)\s+else\s+([\s\S]+?)\s*\)/s);
+    if (m) return { condition: m[2].trim(), ifExpr: m[1].trim(), elseExpr: m[3].trim() };
+    return null;
+  };
+
+  // Split text at top-level commas
+  const splitTopLevel = (text) => {
+    const parts = []; let depth = 0, cur = '';
+    for (const c of text) {
+      if ('{[('.includes(c)) depth++;
+      else if ('}])'.includes(c)) depth--;
+      else if (c === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    return parts;
+  };
+
+  // Flatten a Python dict text into [{path, ...scalar/ternary}] relative field entries
+  const flattenDict = (dictText, parentPath = '') => {
+    dictText = dictText.trim();
+    if (dictText.startsWith('{')) dictText = dictText.slice(1, dictText.lastIndexOf('}')).trim();
+    const fields = [];
+    const entries = splitTopLevel(dictText);
+    for (const entry of entries) {
+      if (!entry) continue;
+      const km = entry.match(/^"([^"]+)"\s*:\s*([\s\S]+)$/s);
+      if (!km) continue;
+      const key = km[1];
+      const val = km[2].trim();
+      const fullPath = parentPath ? parentPath + '.' + key : key;
+      if (val.startsWith('{')) {
+        flattenDict(val, fullPath).forEach(f => fields.push(f));
+      } else {
+        const ternary = parseTernary(val);
+        if (ternary) {
+          fields.push({ id: uid(), path: fullPath, isTernary: true, ...ternary });
+        } else {
+          fields.push({ id: uid(), path: fullPath, isTernary: false, ...parseScalar(val) });
+        }
+      }
+    }
+    return fields;
+  };
+
+  // Collect a multi-line block starting at lineIdx
+  const collectBlock = (lineArr, lineIdx, startToken) => {
+    let depth = 0;
+    const blockLines = [startToken];
+    for (const c of startToken) { if ('{[('.includes(c)) depth++; else if ('}])'.includes(c)) depth--; }
+    let j = lineIdx + 1;
+    while (j < lineArr.length && depth > 0) {
+      const l = lineArr[j];
+      if (l.trim().startsWith('def ')) break;
+      blockLines.push(l);
+      for (const c of l) { if ('{[('.includes(c)) depth++; else if ('}])'.includes(c)) depth--; }
+      j++;
+    }
+    return { text: blockLines.join('\n'), endIdx: j - 1 };
+  };
+
+  // Parse a complete OUTPUT value block into UI assignment item(s)
+  const parseOutputBlock = (key, valueText) => {
+    valueText = valueText.trim();
+
+    // Plain scalar
+    if (!valueText.startsWith('{')) {
+      const scalar = parseScalar(valueText);
+      return [{ id: uid(), type: 'assignment', target: `output.${key}`, listComp: false, ...scalar }];
+    }
+
+    // Dict wrapper: { "outerKey": [ ... ] }
+    const inner = valueText.slice(1, valueText.lastIndexOf('}')).trim();
+    const listKeyMatch = inner.match(/^"([^"]+)"\s*:\s*\[([\s\S]*)\]\s*$/s);
+
+    if (listKeyMatch) {
+      const listBody = listKeyMatch[2].trim();
+      // Dynamic list comprehension: ends with  for X in (iterable or [])
+      const forMatch = listBody.match(/for\s+(\w+)\s+in\s+\((\S+)\s+or\s+\[\]\)\s*$/s);
+      if (forMatch) {
+        const iterator = forMatch[1];
+        const iterable = forMatch[2].replace(/^INPUT\??\./i, 'input.');
+        const dictPart = listBody.slice(0, listBody.lastIndexOf('for')).trim();
+        const childFields = flattenDict(dictPart);
+        const lcChildren = childFields.map(f => {
+          if (f.isTernary) {
+            return { id: uid(), type: 'if', lcTarget: f.path, condition: f.condition, ifExpr: f.ifExpr, elseExpr: f.elseExpr };
+          }
+          return { id: uid(), type: 'assignment', target: f.path, expression: f.expression, exprType: f.exprType, staticValue: f.staticValue || '', funcName: f.funcName || 'now', funcArgs: f.funcArgs || '' };
+        });
+        return [{
+          id: uid(), type: 'assignment',
+          target: `output.${key}.${key}`,
+          listComp: true, lcMode: 'dynamic',
+          lcIterator: iterator, lcIterable: iterable,
+          lcChildren, lcElements: [{ id: uid(), fields: [] }],
+          exprType: 'input', expression: '', staticValue: '', funcName: 'now', funcArgs: '',
+        }];
+      }
+
+      // Static list: one or more { } items
+      const staticItems = [];
+      let depth = 0, start = -1;
+      for (let i = 0; i < listBody.length; i++) {
+        if (listBody[i] === '{') { if (depth === 0) start = i; depth++; }
+        else if (listBody[i] === '}') { depth--; if (depth === 0 && start >= 0) staticItems.push(listBody.slice(start, i + 1)); }
+      }
+      const lcElements = staticItems.map(itemText => ({
+        id: uid(),
+        fields: flattenDict(itemText).map(f => ({
+          id: uid(), target: f.path,
+          exprType: f.exprType || 'input', expression: f.expression || '',
+          staticValue: f.staticValue || '', funcName: f.funcName || 'now', funcArgs: f.funcArgs || '',
+        }))
+      }));
+      return [{
+        id: uid(), type: 'assignment',
+        target: `output.${key}.${listKeyMatch[1]}`,
+        listComp: true, lcMode: 'static',
+        lcIterator: 'item', lcIterable: '',
+        lcChildren: [], lcElements,
+        exprType: 'input', expression: '', staticValue: '', funcName: 'now', funcArgs: '',
+      }];
+    }
+
+    // Nested dict (no list wrapper) — emit as multiple flat assignments
+    return flattenDict(valueText).map(f => ({
+      id: uid(), type: 'assignment', target: `output.${key}.${f.path}`, listComp: false,
+      expression: f.expression || '', exprType: f.exprType || 'input',
+      staticValue: f.staticValue || '', funcName: f.funcName || 'now', funcArgs: f.funcArgs || '',
+    }));
+  };
+
+  // ── Main parse loop ───────────────────────────────────────────────────────
   const modules = [];
   let currentModule = null;
-  lines.forEach((line) => {
-    const trimmed = line.trim();
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+
+    // def transform(INPUT): → main module
     if (trimmed.match(/^def transform\(INPUT\):/)) {
       currentModule = { id: uid(), name: 'main', mappings: [] };
       modules.push(currentModule);
-      return;
+      i++; continue;
     }
-    // Support both camelCase (mapCollateral) and snake_case (map_collateral)
+
+    // def mapXxx(INPUT, OUTPUT): → named module
     const mapDefCamel = trimmed.match(/^def map([A-Z]\w*)\(INPUT, OUTPUT\):/);
     const mapDefSnake = trimmed.match(/^def map_(\w+)\(INPUT, OUTPUT\):/);
     const mapDef = mapDefCamel || mapDefSnake;
     if (mapDef) {
-      // Normalise to camelCase-lowercase name for internal storage
       let rawName = mapDef[1];
-      // If snake_case, keep as-is; if PascalCase (from camelCase def), lower-camelCase it
-      if (mapDefCamel) {
-        rawName = rawName.charAt(0).toLowerCase() + rawName.slice(1);
-      }
+      if (mapDefCamel) rawName = rawName.charAt(0).toLowerCase() + rawName.slice(1);
       currentModule = { id: uid(), name: rawName, mappings: [] };
       modules.push(currentModule);
-      return;
+      i++; continue;
     }
-    if (trimmed.startsWith('def ') && !trimmed.match(/^def (transform|map[A-Z_]\w*)\(/)) {
-      currentModule = null;
-      return;
-    }
-    if (!currentModule) return;
-    // Support both call styles
+
+    if (trimmed.startsWith('def ')) { currentModule = null; i++; continue; }
+    if (!currentModule) { i++; continue; }
+
+    // Skip docstrings, blanks, boilerplate
+    if (!trimmed || trimmed.startsWith('#') || trimmed === 'OUTPUT = {}' || trimmed === 'return OUTPUT') { i++; continue; }
+    if (trimmed.startsWith('"""') || trimmed.startsWith("\"\"\"")) { i++; continue; }
+
+    // Module call: mapXxx(INPUT, OUTPUT)
     const moduleCallCamel = trimmed.match(/^map([A-Z]\w*)\(INPUT, OUTPUT\)/);
     const moduleCallSnake = trimmed.match(/^map_(\w+)\(INPUT, OUTPUT\)/);
     const moduleCallMatch = moduleCallCamel || moduleCallSnake;
@@ -133,27 +300,44 @@ const parseTemplate = (pythonCode) => {
       let callName = moduleCallMatch[1];
       if (moduleCallCamel) callName = callName.charAt(0).toLowerCase() + callName.slice(1);
       currentModule.mappings.push({ id: uid(), type: 'module_call', moduleName: callName });
-      return;
+      i++; continue;
     }
-    // Variable: var_name = expression (number, text, list, etc.)
+
+    // Variable: name = expr (not OUTPUT)
     const varMatch = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/);
     if (varMatch && !trimmed.startsWith('OUTPUT')) {
       currentModule.mappings.push({
-        id: uid(),
-        type: 'variable',
+        id: uid(), type: 'variable',
         varName: varMatch[1],
-        expression: (varMatch[2] || '').replace(/^INPUT\./i, 'input.').trim()
+        expression: (varMatch[2] || '').replace(/^INPUT\??\./i, 'input.').trim()
       });
-      return;
+      i++; continue;
     }
-    const assignMatch = trimmed.match(/OUTPUT\["([^"]+)"\]\s*=\s*(.+)/);
+
+    // OUTPUT["key"] = value (possibly multi-line)
+    const assignMatch = trimmed.match(/^OUTPUT\["([^"]+)"\]\s*=\s*([\s\S]*)$/);
     if (assignMatch) {
-      currentModule.mappings.push({ id: uid(), type: 'assignment', target: assignMatch[1], expression: (assignMatch[2] || '').replace(/^INPUT\./i, 'input.').trim() });
-      return;
+      const key = assignMatch[1];
+      const rest = assignMatch[2].trim();
+      let valueText = rest; let endI = i;
+      let depth = 0;
+      for (const c of rest) { if ('{[('.includes(c)) depth++; else if ('}])'.includes(c)) depth--; }
+      if (depth > 0) { const block = collectBlock(lines, i, rest); valueText = block.text; endI = block.endIdx; }
+      parseOutputBlock(key, valueText).forEach(item => currentModule.mappings.push(item));
+      i = endI + 1;
+      continue;
     }
-  });
+
+    i++;
+  }
+
+  // main always first
+  const mainIdx = modules.findIndex(m => m.name === 'main');
+  if (mainIdx > 0) { const [main] = modules.splice(mainIdx, 1); modules.unshift(main); }
+
   return modules.length ? modules : [{ id: uid(), name: 'main', mappings: [] }];
 };
+
 
 // Flatten all mapping items from all modules (recursive) for diffing
 const flattenMappings = (modules) => {
