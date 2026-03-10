@@ -1537,19 +1537,18 @@ const GrizzlyMappingTool = () => {
             onUpdate(upd);
           };
           const selFn = LC_FUNCS.find(f => f.name === (field.funcName||'now')) || LC_FUNCS[0];
-          const bindFieldTarget = makeBind(`fr-${fid}-target`, 'relative', () => field.target || '', v => onUpdate({ ...field, target: v }));
-          const bindFieldExpr   = makeBind(`fr-${fid}-expr`,   'root-input', () => field.expression || '', v => onUpdate({ ...field, expression: v }), true);
-          const isFieldFocused = selectedInput?.key === `fr-${fid}-target`;
+          const bindFieldExpr = makeBind(`fr-${fid}-expr`, 'root-input', () => field.expression || '', v => onUpdate({ ...field, expression: v }), true);
           return (
             <div key={fid} className="border border-slate-100 rounded-lg bg-white overflow-hidden mb-1.5">
-              {/* field path row */}
+              {/* field path row — plain free-type, no drag/autocomplete */}
               <div className="flex items-center gap-2 px-2 pt-1.5 pb-0.5">
                 <span className="text-xs text-slate-300 w-10 shrink-0">field</span>
                 <div className="flex-1 min-w-0">
                   <input type="text"
-                    placeholder="drag from schema or type path…"
-                    {...bindFieldTarget}
-                    className={`flex-1 w-full px-2 py-1 border rounded text-xs font-mono focus:outline-none ${isFieldFocused ? 'border-amber-500 bg-amber-50' : 'border-yellow-200 bg-yellow-50'}`} />
+                    placeholder="e.g. version  or  address.city"
+                    value={field.target || ''}
+                    onChange={e => onUpdate({ ...field, target: e.target.value })}
+                    className="flex-1 w-full px-2 py-1 border border-yellow-200 rounded text-xs font-mono focus:outline-none focus:border-amber-400 bg-yellow-50" />
                 </div>
                 <button onClick={onDelete} className="p-1 text-red-200 hover:text-red-400 shrink-0"><Trash2 className="w-3 h-3"/></button>
               </div>
