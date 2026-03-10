@@ -1006,6 +1006,23 @@ const GrizzlyMappingTool = () => {
     updateModuleMappings(activeModule,deleteFromParent(mappings, id));
   };
 
+  // Update multiple fields on one item in a single state update (avoids stale closure when switching exprType)
+  const updateItemFields = (id, updates) => {
+    const updateInItems = (items) => {
+      return items.map(it => {
+        if (it.id === id) {
+          return { ...it, ...updates };
+        }
+        let result = { ...it };
+        if (it.children) result = { ...result, children: updateInItems(it.children) };
+        if (it.elifBlocks) result = { ...result, elifBlocks: it.elifBlocks.map(elif => ({ ...elif, children: updateInItems(elif.children) })) };
+        if (it.elseBlock) result = { ...result, elseBlock: { ...it.elseBlock, children: updateInItems(it.elseBlock.children || []) } };
+        return result;
+      });
+    };
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
   const updateItem = (id, field, value) => {
     const updateInItems = (items) => {
       return items.map(item => {
@@ -1515,10 +1532,10 @@ const GrizzlyMappingTool = () => {
           {name:'lower',     label:'lower(text)',          args:true, ph:'item?.field'},
           {name:'concat',    label:'concat(a,b)',          args:true, ph:'item?.a, item?.b'},
         ];
-        const valTypes = { input:'⬅ Input', static:'"…" Text', number:'# Num', function:'ƒ Fn' };
+        const valTypes = { input:'⬅ Input', static:'Static Text', number:'# Num', function:'ƒ Fn' };
         const valColors = {
           input:   'border-green-300 bg-green-50 text-green-700',
-          static:  'border-slate-300 bg-white text-slate-600',
+          static:  'border-slate-400 bg-slate-100 text-slate-800',
           number:  'border-blue-300 bg-blue-50 text-blue-700',
           function:'border-orange-300 bg-orange-50 text-orange-700',
         };
@@ -1704,7 +1721,7 @@ const GrizzlyMappingTool = () => {
       // ── PLAIN expression mode ────────────────────────────────────────────────
       const exprType = item.exprType || 'input';
 
-      // Sync derived expression into item.expression based on exprType
+      // Sync derived expression into item.expression based on exprType (single update so exprType + expression apply together)
       const syncExpr = (type, vals) => {
         const upd = { ...vals, exprType: type };
         if (type === 'static') upd.expression = `"${(vals.staticValue || '').replace(/"/g, '\\"')}"`;
@@ -1713,8 +1730,7 @@ const GrizzlyMappingTool = () => {
           const args = (vals.funcArgs || '').trim();
           upd.expression = args ? `${vals.funcName || 'now'}(${args})` : `${vals.funcName || 'now'}()`;
         }
-        // for 'input' type, expression is managed by handleInputChange
-        Object.entries(upd).forEach(([k, v]) => updateItem(item.id, k, v));
+        updateItemFields(item.id, upd);
       };
 
       const BUILTIN_FUNCTIONS = [
@@ -1729,16 +1745,16 @@ const GrizzlyMappingTool = () => {
       ];
 
       const typeConfig = {
-        input:    { label: '⬅ From Input',   bg: 'bg-green-50',  border: 'border-green-300',  text: 'text-green-700' },
-        static:   { label: '"…" Static Text', bg: 'bg-white',     border: 'border-slate-300',  text: 'text-slate-700' },
-        number:   { label: '# Number',        bg: 'bg-blue-50',   border: 'border-blue-300',   text: 'text-blue-700'  },
-        function: { label: 'ƒ Function',       bg: 'bg-orange-50', border: 'border-orange-300', text: 'text-orange-700'},
+        input:    { label: '⬅ From Input',   bg: 'bg-green-50',   border: 'border-green-300',  text: 'text-green-700' },
+        static:   { label: 'Static Text',    bg: 'bg-slate-100',  border: 'border-slate-400',  text: 'text-slate-800' },
+        number:   { label: '# Number',       bg: 'bg-blue-50',    border: 'border-blue-300',   text: 'text-blue-700'  },
+        function: { label: 'ƒ Function',     bg: 'bg-orange-50', border: 'border-orange-300', text: 'text-orange-700'},
       };
 
       const renderValueInput = () => {
         if (exprType === 'input') {
           return (
-            <div onDrop={handleExpressionDrop} onDragOver={handleDragOver} className="flex-1 relative">
+            <div onDrop={handleExpressionDrop} onDragOver={handleDragOver} className="flex-1 min-w-0 relative">
               <input type="text" placeholder="Drag from Input schema or type path…" value={item.expression}
                 onFocus={e => handleInputFocus(e, item.id, 'expression')} onChange={e => handleInputChange(e, item.id, 'expression')}
                 className={`w-full px-3 py-2 border rounded focus:outline-none text-sm font-mono ${selectedInput?.id === item.id && selectedInput?.field === 'expression' ? 'border-green-500 bg-green-100' : 'border-green-300 bg-green-50'}`} />
@@ -1747,7 +1763,7 @@ const GrizzlyMappingTool = () => {
         }
         if (exprType === 'static') {
           return (
-            <div className="flex-1 relative">
+            <div className="flex-1 min-w-0 relative">
               <input type="text" placeholder='Type the static text value, e.g.  1.0.0'
                 value={item.staticValue || ''}
                 onChange={e => syncExpr('static', { staticValue: e.target.value })}
@@ -1758,7 +1774,7 @@ const GrizzlyMappingTool = () => {
         }
         if (exprType === 'number') {
           return (
-            <div className="flex-1 relative">
+            <div className="flex-1 min-w-0 relative">
               <input type="number" placeholder="0"
                 value={item.staticValue || ''}
                 onChange={e => syncExpr('number', { staticValue: e.target.value })}
@@ -1769,7 +1785,7 @@ const GrizzlyMappingTool = () => {
         if (exprType === 'function') {
           const selFn = BUILTIN_FUNCTIONS.find(f => f.name === (item.funcName || 'now')) || BUILTIN_FUNCTIONS[0];
           return (
-            <div className="flex-1 flex gap-2">
+            <div className="flex-1 flex gap-2 min-w-0">
               <select value={item.funcName || 'now'}
                 onChange={e => syncExpr('function', { funcName: e.target.value, funcArgs: item.funcArgs || '', staticValue: item.staticValue || '' })}
                 className="px-2 py-2 border border-orange-300 rounded text-sm bg-orange-50 focus:outline-none shrink-0">
@@ -1779,7 +1795,7 @@ const GrizzlyMappingTool = () => {
                 <input type="text" placeholder={selFn.argsPlaceholder || 'arguments…'}
                   value={item.funcArgs || ''}
                   onChange={e => syncExpr('function', { funcName: item.funcName || 'now', funcArgs: e.target.value, staticValue: item.staticValue || '' })}
-                  className="flex-1 px-3 py-2 border border-orange-200 rounded text-sm font-mono bg-white focus:outline-none" />
+                  className="flex-1 min-w-0 px-3 py-2 border border-orange-200 rounded text-sm font-mono bg-white focus:outline-none" />
               )}
               {!selFn.args && <span className="flex-1 px-3 py-2 text-xs text-orange-500 flex items-center">{selFn.desc}</span>}
             </div>
@@ -1815,7 +1831,7 @@ const GrizzlyMappingTool = () => {
               {/* Type pill buttons */}
               <div className="flex gap-1 shrink-0">
                 {Object.entries(typeConfig).map(([t, cfg]) => (
-                  <button key={t} onClick={() => { updateItem(item.id, 'exprType', t); if (t !== 'input') syncExpr(t, { staticValue: item.staticValue || '', funcName: item.funcName || 'now', funcArgs: item.funcArgs || '' }); }}
+                  <button key={t} onClick={() => { if (t === 'input') updateItem(item.id, 'exprType', 'input'); else syncExpr(t, { staticValue: item.staticValue || '', funcName: item.funcName || 'now', funcArgs: item.funcArgs || '' }); }}
                     className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${exprType === t ? `${cfg.bg} ${cfg.border} ${cfg.text} shadow-sm` : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}>
                     {cfg.label}
                   </button>
