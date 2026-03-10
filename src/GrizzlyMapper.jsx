@@ -3,6 +3,14 @@ import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Fold
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
+// ── Shared value-type config (used in both plain assignment and for-loop/static-list field rows) ──
+const VALUE_TYPE_CONFIG = {
+  input:    { label: '⬅ Input',  activeClass: 'border-green-300  bg-green-50   text-green-700'  },
+  static:   { label: '" Text',   activeClass: 'border-slate-400  bg-slate-100  text-slate-800'  },
+  number:   { label: '# Num',    activeClass: 'border-blue-300   bg-blue-50    text-blue-700'   },
+  function: { label: 'ƒ Fn',     activeClass: 'border-orange-300 bg-orange-50  text-orange-700' },
+};
+
 const defaultInputSchema = {
   type: 'object',
   properties: {
@@ -1557,13 +1565,9 @@ const GrizzlyMappingTool = () => {
           {name:'lower',     label:'lower(text)',          args:true, ph:'item?.field'},
           {name:'concat',    label:'concat(a,b)',          args:true, ph:'item?.a, item?.b'},
         ];
-        const valTypes = { input:'⬅ Input', static:'Static Text', number:'# Num', function:'ƒ Fn' };
-        const valColors = {
-          input:   'border-green-300 bg-green-50 text-green-700',
-          static:  'border-slate-400 bg-slate-100 text-slate-800',
-          number:  'border-blue-300 bg-blue-50 text-blue-700',
-          function:'border-orange-300 bg-orange-50 text-orange-700',
-        };
+        // valTypes / valColors derived from shared VALUE_TYPE_CONFIG
+        const valTypes  = Object.fromEntries(Object.entries(VALUE_TYPE_CONFIG).map(([k,v]) => [k, v.label]));
+        const valColors = Object.fromEntries(Object.entries(VALUE_TYPE_CONFIG).map(([k,v]) => [k, v.activeClass]));
 
         // Shared field row — used in both static elements and dynamic FOR body
         // lcFieldContext: { assignmentId, elementId, fieldId } when in static list — enables schema drag/double-click/autocomplete for field
@@ -1791,12 +1795,7 @@ const GrizzlyMappingTool = () => {
         { name: 'coalesce', label: 'coalesce(a, b)', desc: 'First non-null value', args: true, argsPlaceholder: 'input.field, "default"' },
       ];
 
-      const typeConfig = {
-        input:    { label: '⬅ From Input',   bg: 'bg-green-50',   border: 'border-green-300',  text: 'text-green-700' },
-        static:   { label: 'Static Text',    bg: 'bg-slate-100',  border: 'border-slate-400',  text: 'text-slate-800' },
-        number:   { label: '# Number',       bg: 'bg-blue-50',    border: 'border-blue-300',   text: 'text-blue-700'  },
-        function: { label: 'ƒ Function',     bg: 'bg-orange-50', border: 'border-orange-300', text: 'text-orange-700'},
-      };
+      const typeConfig = VALUE_TYPE_CONFIG;
 
       const renderValueInput = () => {
         if (exprType === 'input') {
@@ -1879,7 +1878,7 @@ const GrizzlyMappingTool = () => {
               <div className="flex gap-1 shrink-0">
                 {Object.entries(typeConfig).map(([t, cfg]) => (
                   <button key={t} onClick={() => { if (t === 'input') updateItem(item.id, 'exprType', 'input'); else syncExpr(t, { staticValue: item.staticValue || '', funcName: item.funcName || 'now', funcArgs: item.funcArgs || '' }); }}
-                    className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${exprType === t ? `${cfg.bg} ${cfg.border} ${cfg.text} shadow-sm` : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}>
+                    className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${exprType === t ? `${cfg.activeClass} shadow-sm` : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}>
                     {cfg.label}
                   </button>
                 ))}
