@@ -449,12 +449,13 @@ const GrizzlyMappingTool = () => {
   const [outputSearchTerm, setOutputSearchTerm] = useState('');
   
   // Selection and autocomplete state
-  const [selectedInput, setSelectedInput] = useState(null); // { id, field: 'target' | 'expression' | 'condition' | 'iterable' }
+  const [selectedInput, setSelectedInput] = useState(null); // { id, field, lcContext?: { assignmentId, elementId, fieldId } }
   const [autocompleteState, setAutocompleteState] = useState({
     show: false,
     suggestions: [],
     inputId: null,
     field: null,
+    lcContext: null, // { assignmentId, elementId, fieldId } for static list field target
     position: { top: 0, left: 0 },
     cursorPosition: 0
   });
@@ -603,12 +604,25 @@ const GrizzlyMappingTool = () => {
     setExpandedBlocks(newExpanded);
   };
 
+  // Strip schema prefix for display in static list field (e.g. "output.foo.bar" -> "foo.bar")
+  const stripSchemaPrefix = (path) => {
+    if (!path || typeof path !== 'string') return path;
+    return path.replace(/^(input|output)\./, '');
+  };
+
   // Handle double click on schema node
   const handleSchemaDoubleClick = (path, isInput, e) => {
     if (e) e.stopPropagation();
     if (!selectedInput) return;
 
-    const { id, field } = selectedInput;
+    const { id, field, lcContext } = selectedInput;
+
+    // Static list field target: accept both input and output schema paths
+    if (lcContext && field === 'lcFieldTarget') {
+      const displayPath = stripSchemaPrefix(path);
+      replaceLcElementField(lcContext.assignmentId, lcContext.elementId, lcContext.fieldId, { target: displayPath });
+      return;
+    }
 
     // Determine if the path is appropriate for the field
     if (field === 'target' && isInput) return; // Target should be from output
@@ -654,30 +668,36 @@ const GrizzlyMappingTool = () => {
     return null;
   };
 
-  // Handle input focus for autocomplete
-  const handleInputFocus = (e, id, field) => {
-    setSelectedInput({ id, field });
+  // Handle input focus for autocomplete (lcContext for static list field target)
+  const handleInputFocus = (e, id, field, lcContext = null) => {
+    setSelectedInput(lcContext ? { id, field: 'lcFieldTarget', lcContext } : { id, field });
   };
 
-  // Handle input change with autocomplete
-  const handleInputChange = (e, id, field) => {
+  // Handle input change with autocomplete (lcContext for static list field target)
+  const handleInputChange = (e, id, field, lcContext = null, onLcUpdate = null) => {
     const value = e.target.value;
     const cursorPosition = e.target.selectionStart;
-    
-    updateItem(id, field, value);
+
+    if (lcContext && onLcUpdate) {
+      onLcUpdate({ target: value });
+    } else {
+      updateItem(id, field, value);
+    }
 
     // Show autocomplete
     const rect = e.target.getBoundingClientRect();
-    
+
     // Get the text up to cursor position
     const textBeforeCursor = value.substring(0, cursorPosition);
     const lastWord = textBeforeCursor.split(/[\s+\-*/(),[\]{}]/).pop() || '';
 
     if (lastWord.length >= 1) {
-      // Target field = output paths only; expression / condition / iterable = input paths only
-      const pathSource = field === 'target' ? outputPaths : inputPaths;
+      // lcFieldTarget = both input and output paths; target = output only; expression/condition/iterable = input only
+      const pathSource = (lcContext || field === 'lcFieldTarget') ? allPaths
+        : field === 'target' ? outputPaths
+        : inputPaths;
       let suggestions = pathSource.filter(p =>
-        p.path.toLowerCase().includes(lastWord.toLowerCase())
+        (p.path || '').toLowerCase().includes(lastWord.toLowerCase())
       );
 
       // For iterable: sort array-type paths to the top
@@ -695,7 +715,9 @@ const GrizzlyMappingTool = () => {
           show: true,
           suggestions,
           inputId: id,
-          field,
+          field: lcContext ? 'lcFieldTarget' : field,
+          lcContext: lcContext || null,
+          onLcUpdate: onLcUpdate || null,
           position: {
             top: rect.bottom + window.scrollY,
             left: rect.left + window.scrollX
@@ -707,27 +729,29 @@ const GrizzlyMappingTool = () => {
       }
     }
 
-    setAutocompleteState({ ...autocompleteState, show: false });
+    setAutocompleteState((prev) => ({ ...prev, show: false }));
   };
 
   // Handle autocomplete selection
   const handleAutocompleteSelect = (path) => {
-    const { inputId, field, cursorPosition, searchTerm } = autocompleteState;
-    const item = findItemById(mappings, inputId);
-    
-    if (item) {
-      const currentValue = item[field] || '';
-      const textBeforeCursor = currentValue.substring(0, cursorPosition);
-      const textAfterCursor = currentValue.substring(cursorPosition);
-      
-      // Replace the last word with the selected path
-      const beforeLastWord = textBeforeCursor.substring(0, textBeforeCursor.lastIndexOf(searchTerm));
-      const newValue = beforeLastWord + path + textAfterCursor;
-      
-      updateItem(inputId, field, newValue);
+    const { inputId, field, cursorPosition, searchTerm, lcContext } = autocompleteState;
+
+    if (lcContext && field === 'lcFieldTarget') {
+      const displayPath = stripSchemaPrefix(path);
+      replaceLcElementField(lcContext.assignmentId, lcContext.elementId, lcContext.fieldId, { target: displayPath });
+    } else {
+      const item = findItemById(mappings, inputId);
+      if (item) {
+        const currentValue = item[field] || '';
+        const textBeforeCursor = currentValue.substring(0, cursorPosition);
+        const textAfterCursor = currentValue.substring(cursorPosition);
+        const beforeLastWord = textBeforeCursor.substring(0, textBeforeCursor.lastIndexOf(searchTerm));
+        const newValue = beforeLastWord + path + textAfterCursor;
+        updateItem(inputId, field, newValue);
+      }
     }
 
-    setAutocompleteState({ ...autocompleteState, show: false });
+    setAutocompleteState((prev) => ({ ...prev, show: false }));
   };
 
   // Click outside autocomplete
@@ -843,8 +867,9 @@ const GrizzlyMappingTool = () => {
         </div>
       );
     } else {
-      const activeHighlight = selectedInput && 
-        ((selectedInput.field === 'target' && !isInput) || 
+      const activeHighlight = selectedInput &&
+        ((selectedInput.field === 'target' && !isInput) ||
+         (selectedInput.field === 'lcFieldTarget') ||
          (selectedInput.field === 'expression' && isInput) ||
          (selectedInput.field === 'condition') ||
          (selectedInput.field === 'iterable' && isInput));
@@ -1541,7 +1566,8 @@ const GrizzlyMappingTool = () => {
         };
 
         // Shared field row — used in both static elements and dynamic FOR body
-        const renderFieldRow = (fid, field, onUpdate, onDelete) => {
+        // lcFieldContext: { assignmentId, elementId, fieldId } when in static list — enables schema drag/double-click/autocomplete for field
+        const renderFieldRow = (fid, field, onUpdate, onDelete, lcFieldContext = null) => {
           const et = field.exprType || 'input';
           const sync = (type, vals) => {
             const upd = { ...field, ...vals, exprType: type };
@@ -1551,16 +1577,36 @@ const GrizzlyMappingTool = () => {
             onUpdate(upd);
           };
           const selFn = LC_FUNCS.find(f => f.name === (field.funcName||'now')) || LC_FUNCS[0];
+          const handleLcFieldTargetDrop = lcFieldContext ? (e) => {
+            e.preventDefault(); e.stopPropagation();
+            try {
+              const d = JSON.parse(e.dataTransfer.getData('application/json'));
+              if (d && d.path) {
+                const displayPath = stripSchemaPrefix(d.path);
+                onUpdate({ ...field, target: displayPath });
+              }
+            } catch {}
+          } : null;
+          const isFieldFocused = lcFieldContext && selectedInput?.field === 'lcFieldTarget' &&
+            selectedInput?.lcContext?.assignmentId === lcFieldContext.assignmentId &&
+            selectedInput?.lcContext?.elementId === lcFieldContext.elementId &&
+            selectedInput?.lcContext?.fieldId === lcFieldContext.fieldId;
           return (
             <div key={fid} className="border border-slate-100 rounded-lg bg-white overflow-hidden mb-1.5">
               {/* field path row */}
               <div className="flex items-center gap-2 px-2 pt-1.5 pb-0.5">
                 <span className="text-xs text-slate-300 w-10 shrink-0">field</span>
-                <input type="text"
-                  placeholder="path — e.g.  version   or   createDatetime.datetime"
-                  value={field.target || ''}
-                  onChange={e => onUpdate({ ...field, target: e.target.value })}
-                  className="flex-1 px-2 py-1 border border-yellow-200 rounded text-xs font-mono bg-yellow-50 focus:outline-none" />
+                <div className="flex-1 min-w-0" onDrop={handleLcFieldTargetDrop} onDragOver={handleLcFieldTargetDrop ? handleDragOver : undefined}>
+                  <input type="text"
+                    placeholder={lcFieldContext ? "drag from Input/Output schema or type path…" : "path — e.g.  version   or   createDatetime.datetime"}
+                    value={field.target || ''}
+                    onFocus={e => lcFieldContext ? handleInputFocus(e, null, null, lcFieldContext) : undefined}
+                    onChange={e => lcFieldContext
+                      ? handleInputChange(e, null, 'lcFieldTarget', lcFieldContext, (upd) => onUpdate({ ...field, ...upd }))
+                      : onUpdate({ ...field, target: e.target.value })
+                    }
+                    className={`flex-1 w-full px-2 py-1 border rounded text-xs font-mono focus:outline-none ${isFieldFocused ? 'border-amber-500 bg-amber-50' : 'border-yellow-200 bg-yellow-50'}`} />
+                </div>
                 <button onClick={onDelete} className="p-1 text-red-200 hover:text-red-400 shrink-0"><Trash2 className="w-3 h-3"/></button>
               </div>
               {/* value type + input row */}
@@ -1652,7 +1698,8 @@ const GrizzlyMappingTool = () => {
                               renderFieldRow(
                                 field.id, field,
                                 (updated) => replaceLcElementField(item.id, el.id, field.id, updated),
-                                () => deleteLcElementField(item.id, el.id, field.id)
+                                () => deleteLcElementField(item.id, el.id, field.id),
+                                { assignmentId: item.id, elementId: el.id, fieldId: field.id }
                               )
                             )}
                             <button onClick={() => addLcElementField(item.id, el.id)}
