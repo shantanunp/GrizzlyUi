@@ -456,16 +456,25 @@ const GrizzlyMappingTool = () => {
   const [inputSearchTerm, setInputSearchTerm] = useState('');
   const [outputSearchTerm, setOutputSearchTerm] = useState('');
   
-  // Selection and autocomplete state
-  const [selectedInput, setSelectedInput] = useState(null); // { id, field, lcContext?: { assignmentId, elementId, fieldId } }
+  // ── Unified path-input selection state ──────────────────────────────────────
+  // selectedInput: { key, pathMode, setter, appendMode }
+  //   key:        arbitrary unique string to identify the focused input
+  //   pathMode:   'root-input'  - accept input.* paths (root-prefixed)
+  //               'root-output' - accept output.* paths (root-prefixed)
+  //               'root-both'   - accept any path (root-prefixed)
+  //               'relative'    - accept any path, strip input./output. prefix
+  //   setter:     (path: string) => void  — called with the resolved path
+  //   appendMode: if true, append to existing value with ' + ' instead of replace
+  const [selectedInput, setSelectedInput] = useState(null);
   const [autocompleteState, setAutocompleteState] = useState({
     show: false,
     suggestions: [],
-    inputId: null,
-    field: null,
-    lcContext: null, // { assignmentId, elementId, fieldId } for static list field target
     position: { top: 0, left: 0 },
-    cursorPosition: 0
+    cursorPosition: 0,
+    searchTerm: '',
+    currentValue: '',
+    setter: null,
+    pathMode: null,
   });
 
   // Refs for autocomplete
@@ -540,7 +549,7 @@ const GrizzlyMappingTool = () => {
 
           if (item.listComp) {
             const base = item.target || '';
-            if (item.lcMode === 'static') {
+            if (item.lcMode === 'static' || item.lcMode === 'object') {
               (item.lcElements || []).forEach(el => {
                 (el.fields || []).forEach(f => {
                   if (f.target) addPath(base + '.' + f.target, out);
@@ -612,44 +621,97 @@ const GrizzlyMappingTool = () => {
     setExpandedBlocks(newExpanded);
   };
 
-  // Strip schema prefix for display in static list field (e.g. "output.foo.bar" -> "foo.bar")
-  const stripSchemaPrefix = (path) => {
-    if (!path || typeof path !== 'string') return path;
-    return path.replace(/^(input|output)\./, '');
+  // ── Resolve a path for a given pathMode ──────────────────────────────────
+  const resolvePath = (rawPath, pathMode) => {
+    if (!rawPath) return rawPath;
+    if (pathMode === 'relative') return rawPath.replace(/^(input|output)\./, '');
+    return rawPath; // root-* modes keep full prefix
   };
 
-  // Handle double click on schema node
+  // ── Check if a schema node (isInput flag) is acceptable for a given pathMode ──
+  const pathModeAccepts = (isInput, pathMode) => {
+    if (pathMode === 'root-input')  return isInput;
+    if (pathMode === 'root-output') return !isInput;
+    return true; // root-both, relative
+  };
+
+  // ── Get the autocomplete path pool for a given pathMode ──
+  const pathsForMode = (pathMode) => {
+    if (pathMode === 'root-input')  return inputPaths;
+    if (pathMode === 'root-output') return outputPaths;
+    return allPaths; // root-both, relative
+  };
+
+  // ── makeBind: returns props to spread onto any <input> that accepts a path ──
+  //   key       - unique string (e.g. item.id + '.expression')
+  //   pathMode  - 'root-input' | 'root-output' | 'root-both' | 'relative'
+  //   getValue  - () => string   current value
+  //   setValue  - (v: string) => void   write new value
+  //   appendMode - if true, clicking schema appends with ' + ' instead of replacing
+  const makeBind = (key, pathMode, getValue, setValue, appendMode = false) => ({
+    value: getValue(),
+    onFocus: () => setSelectedInput({ key, pathMode, setter: (path) => {
+      const resolved = resolvePath(path, pathMode);
+      if (appendMode) {
+        const cur = getValue();
+        setValue(cur ? `${cur} + ${resolved}` : resolved);
+      } else {
+        setValue(resolved);
+      }
+    }}),
+    onBlur: () => {},   // keep selectedInput for double-click; cleared by click-outside
+    onChange: (e) => {
+      const value = e.target.value;
+      setValue(value);
+      const cursor = e.target.selectionStart;
+      const rect = e.target.getBoundingClientRect();
+      const textBeforeCursor = value.substring(0, cursor);
+      const lastWord = textBeforeCursor.split(/[\s+\-*/(),[\]{}]/).pop() || '';
+      if (lastWord.length >= 1) {
+        let suggestions = pathsForMode(pathMode).filter(p =>
+          (p.path || '').toLowerCase().includes(lastWord.toLowerCase())
+        );
+        if (pathMode === 'relative') {
+          // strip prefix for display in relative mode
+          suggestions = suggestions.map(s => ({ ...s, path: s.path.replace(/^(input|output)\./, '') }));
+        }
+        suggestions = suggestions.slice(0, 10);
+        if (suggestions.length > 0) {
+          setAutocompleteState({
+            show: true, suggestions,
+            position: { top: rect.bottom + window.scrollY, left: rect.left + window.scrollX },
+            cursorPosition: cursor, searchTerm: lastWord,
+            currentValue: value, setter: setValue, pathMode,
+          });
+          return;
+        }
+      }
+      setAutocompleteState(prev => ({ ...prev, show: false }));
+    },
+    onDrop: (e) => {
+      e.preventDefault(); e.stopPropagation();
+      try {
+        const d = JSON.parse(e.dataTransfer.getData('application/json'));
+        if (d && d.path && pathModeAccepts(d.isInput, pathMode)) {
+          const resolved = resolvePath(d.path, pathMode);
+          if (appendMode) {
+            const cur = getValue();
+            setValue(cur ? `${cur} + ${resolved}` : resolved);
+          } else {
+            setValue(resolved);
+          }
+        }
+      } catch {}
+    },
+    onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); },
+  });
+
+  // ── Handle schema node double-click — delegates to selectedInput.setter ──
   const handleSchemaDoubleClick = (path, isInput, e) => {
     if (e) e.stopPropagation();
-    if (!selectedInput) return;
-
-    const { id, field, lcContext } = selectedInput;
-
-    // Static list field target: accept both input and output schema paths
-    if (lcContext && field === 'lcFieldTarget') {
-      const displayPath = stripSchemaPrefix(path);
-      replaceLcElementField(lcContext.assignmentId, lcContext.elementId, lcContext.fieldId, { target: displayPath });
-      return;
-    }
-
-    // Determine if the path is appropriate for the field
-    if (field === 'target' && isInput) return; // Target should be from output
-    if (field === 'expression' && !isInput) return; // Expression should be from input
-    if ((field === 'condition' || field === 'iterable') && !isInput) return; // Condition/iterable use input paths
-
-    // Update the item
-    if (field === 'expression') {
-      // Append to expression
-      const item = findItemById(mappings, id);
-      if (item) {
-        const currentValue = item[field] || '';
-        const newValue = currentValue ? `${currentValue} + ${path}` : path;
-        updateItem(id, field, newValue);
-      }
-    } else {
-      // Replace for target, condition, iterable
-      updateItem(id, field, path);
-    }
+    if (!selectedInput || !selectedInput.setter) return;
+    if (!pathModeAccepts(isInput, selectedInput.pathMode)) return;
+    selectedInput.setter(path);
   };
 
   // Find item by ID
@@ -676,90 +738,16 @@ const GrizzlyMappingTool = () => {
     return null;
   };
 
-  // Handle input focus for autocomplete (lcContext for static list field target)
-  const handleInputFocus = (e, id, field, lcContext = null) => {
-    setSelectedInput(lcContext ? { id, field: 'lcFieldTarget', lcContext } : { id, field });
-  };
-
-  // Handle input change with autocomplete (lcContext for static list field target)
-  const handleInputChange = (e, id, field, lcContext = null, onLcUpdate = null) => {
-    const value = e.target.value;
-    const cursorPosition = e.target.selectionStart;
-
-    if (lcContext && onLcUpdate) {
-      onLcUpdate({ target: value });
-    } else {
-      updateItem(id, field, value);
-    }
-
-    // Show autocomplete
-    const rect = e.target.getBoundingClientRect();
-
-    // Get the text up to cursor position
-    const textBeforeCursor = value.substring(0, cursorPosition);
-    const lastWord = textBeforeCursor.split(/[\s+\-*/(),[\]{}]/).pop() || '';
-
-    if (lastWord.length >= 1) {
-      // lcFieldTarget = both input and output paths; target = output only; expression/condition/iterable = input only
-      const pathSource = (lcContext || field === 'lcFieldTarget') ? allPaths
-        : field === 'target' ? outputPaths
-        : inputPaths;
-      let suggestions = pathSource.filter(p =>
-        (p.path || '').toLowerCase().includes(lastWord.toLowerCase())
-      );
-
-      // For iterable: sort array-type paths to the top
-      if (field === 'iterable') {
-        suggestions = [
-          ...suggestions.filter(p => p.type === 'array'),
-          ...suggestions.filter(p => p.type !== 'array')
-        ];
-      }
-
-      suggestions = suggestions.slice(0, 10);
-
-      if (suggestions.length > 0) {
-        setAutocompleteState({
-          show: true,
-          suggestions,
-          inputId: id,
-          field: lcContext ? 'lcFieldTarget' : field,
-          lcContext: lcContext || null,
-          onLcUpdate: onLcUpdate || null,
-          position: {
-            top: rect.bottom + window.scrollY,
-            left: rect.left + window.scrollX
-          },
-          cursorPosition,
-          searchTerm: lastWord
-        });
-        return;
-      }
-    }
-
-    setAutocompleteState((prev) => ({ ...prev, show: false }));
-  };
-
-  // Handle autocomplete selection
+  // ── Autocomplete selection ────────────────────────────────────────────────
   const handleAutocompleteSelect = (path) => {
-    const { inputId, field, cursorPosition, searchTerm, lcContext } = autocompleteState;
-
-    if (lcContext && field === 'lcFieldTarget') {
-      const displayPath = stripSchemaPrefix(path);
-      replaceLcElementField(lcContext.assignmentId, lcContext.elementId, lcContext.fieldId, { target: displayPath });
-    } else {
-      const item = findItemById(mappings, inputId);
-      if (item) {
-        const currentValue = item[field] || '';
-        const textBeforeCursor = currentValue.substring(0, cursorPosition);
-        const textAfterCursor = currentValue.substring(cursorPosition);
-        const beforeLastWord = textBeforeCursor.substring(0, textBeforeCursor.lastIndexOf(searchTerm));
-        const newValue = beforeLastWord + path + textAfterCursor;
-        updateItem(inputId, field, newValue);
-      }
-    }
-
-    setAutocompleteState((prev) => ({ ...prev, show: false }));
+    const { cursorPosition, searchTerm, currentValue, setter, pathMode } = autocompleteState;
+    if (!setter) return;
+    const resolved = pathMode === 'relative' ? path.replace(/^(input|output)\./, '') : path;
+    const textBeforeCursor = currentValue.substring(0, cursorPosition);
+    const textAfterCursor = currentValue.substring(cursorPosition);
+    const beforeLastWord = textBeforeCursor.substring(0, textBeforeCursor.lastIndexOf(searchTerm));
+    setter(beforeLastWord + resolved + textAfterCursor);
+    setAutocompleteState(prev => ({ ...prev, show: false }));
   };
 
   // Click outside autocomplete
@@ -851,12 +839,12 @@ const GrizzlyMappingTool = () => {
             } : undefined}
             onDoubleClick={isInput ? (ev) => {
               ev.stopPropagation();
-              if (selectedInput?.field === 'iterable') {
-                updateItem(selectedInput.id, 'iterable', fullPath);
+              if (selectedInput && selectedInput.setter && pathModeAccepts(true, selectedInput.pathMode)) {
+                selectedInput.setter(fullPath);
               }
             } : undefined}
             className={`flex items-center gap-2 p-2 hover:bg-gray-100 rounded ${isInput ? 'cursor-move' : 'cursor-pointer'} ${
-              selectedInput?.field === 'iterable' && isInput ? 'bg-green-50 ring-1 ring-green-300' : ''
+              selectedInput && isInput && pathModeAccepts(true, selectedInput.pathMode) ? 'bg-green-50 ring-1 ring-green-300' : ''
             } ${isMapped ? 'bg-emerald-50 border-l-2 border-emerald-400' : ''}`}
             onClick={() => toggleNode(nodeId)}
             title={isInput ? 'Double-click or drag to use as FOR iterable' : undefined}
@@ -876,11 +864,10 @@ const GrizzlyMappingTool = () => {
       );
     } else {
       const activeHighlight = selectedInput &&
-        ((selectedInput.field === 'target' && !isInput) ||
-         (selectedInput.field === 'lcFieldTarget') ||
-         (selectedInput.field === 'expression' && isInput) ||
-         (selectedInput.field === 'condition') ||
-         (selectedInput.field === 'iterable' && isInput));
+        ((selectedInput.pathMode === 'root-output' && !isInput) ||
+         (selectedInput.pathMode === 'root-input'  &&  isInput) ||
+         (selectedInput.pathMode === 'root-both') ||
+         (selectedInput.pathMode === 'relative'));
       return (
         <div
           key={nodeId}
@@ -1400,11 +1387,6 @@ const GrizzlyMappingTool = () => {
     const isExpanded = expandedBlocks.has(item.id);
     const indentWidth = depth * 24;
 
-    const handleDragOver = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-
     if (item.type === 'module_call') {
       const otherModules = modules.filter((m, i) => i !== activeModule && m.name !== 'main');
       return (
@@ -1433,18 +1415,6 @@ const GrizzlyMappingTool = () => {
     }
 
     if (item.type === 'variable') {
-      const handleExprDrop = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        try {
-          const dragData = JSON.parse(e.dataTransfer.getData('application/json'));
-          if (dragData && dragData.isInput) {
-            updateItem(item.id, 'expression', dragData.path);
-          }
-        } catch (err) {
-          console.error('Error parsing drag data:', err);
-        }
-      };
       return (
         <div key={item.id} className="group hover:bg-slate-50 rounded-lg transition-colors" style={{ marginLeft: `${indentWidth}px` }}>
           <div className="flex items-center gap-2 p-3 border border-slate-200 rounded-lg bg-slate-50/50">
@@ -1457,15 +1427,13 @@ const GrizzlyMappingTool = () => {
                 onChange={(e) => updateItem(item.id, 'varName', e.target.value)}
                 className="w-full px-3 py-2 border border-slate-200 rounded text-sm font-mono bg-white focus:outline-none focus:border-slate-400"
               />
-              <div onDrop={handleExprDrop} onDragOver={handleDragOver} className="relative">
+              <div className="relative">
                 <input
                   type="text"
                   placeholder="Value (drag from Input or type: number, text, list...)"
-                  value={item.expression || ''}
-                  onFocus={(e) => handleInputFocus(e, item.id, 'expression')}
-                  onChange={(e) => handleInputChange(e, item.id, 'expression')}
+                  {...makeBind(`var-${item.id}-expr`, 'root-input', () => item.expression || '', v => updateItem(item.id, 'expression', v), false)}
                   className={`w-full px-3 py-2 border rounded text-sm font-mono focus:outline-none focus:border-slate-400 ${
-                    selectedInput?.id === item.id && selectedInput?.field === 'expression'
+                    selectedInput?.key === `var-${item.id}-expr`
                       ? 'border-slate-500 bg-slate-100'
                       : 'border-slate-200 bg-white'
                   }`}
@@ -1481,18 +1449,10 @@ const GrizzlyMappingTool = () => {
     }
 
     if (item.type === 'assignment') {
-      const handleTargetDrop = (e) => {
-        e.preventDefault(); e.stopPropagation();
-        try { const d = JSON.parse(e.dataTransfer.getData('application/json')); if (d && !d.isInput) updateItem(item.id, 'target', d.path); } catch {}
-      };
-      const handleExpressionDrop = (e) => {
-        e.preventDefault(); e.stopPropagation();
-        try { const d = JSON.parse(e.dataTransfer.getData('application/json')); if (d && d.isInput) { const cur = item.expression; updateItem(item.id, 'expression', cur ? `${cur} + ${d.path}` : d.path); } } catch {}
-      };
-      const handleLcIterableDrop = (e) => {
-        e.preventDefault(); e.stopPropagation();
-        try { const d = JSON.parse(e.dataTransfer.getData('application/json')); if (d && d.isInput) updateItem(item.id, 'lcIterable', d.path); } catch {}
-      };
+      // makeBind wires: per-field bindings for drag, drop, focus, change, autocomplete
+      const bindTarget   = makeBind(`asgn-${item.id}-target`,   'root-output', () => item.target,      v => updateItem(item.id, 'target', v));
+      const bindExpr     = makeBind(`asgn-${item.id}-expr`,     'root-input',  () => item.expression,  v => updateItem(item.id, 'expression', v), true);
+      const bindIterable = makeBind(`asgn-${item.id}-iterable`, 'root-input',  () => item.lcIterable || '', v => updateItem(item.id, 'lcIterable', v));
 
       // Render a compact IF/ELSE ternary block inside the list comp body.
       // Data model: child.lcTarget (output path), child.condition, child.ifExpr, child.elseExpr
@@ -1513,37 +1473,33 @@ const GrizzlyMappingTool = () => {
             </div>
             {isExp && (
               <div className="p-2 space-y-1.5 bg-white">
-                {/* Output field path — shared by both branches */}
+                {/* Output field path — relative, no prefix */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-slate-500 w-16 shrink-0">field path</span>
                   <input type="text" placeholder="e.g. field.nested.value"
-                    value={child.lcTarget || ''}
-                    onChange={e => updateLcChild(item.id, child.id, 'lcTarget', e.target.value)}
-                    className="flex-1 px-2 py-1 border border-slate-300 rounded text-xs font-mono bg-yellow-50 focus:outline-none" />
+                    {...makeBind(`lcif-${child.id}-target`, 'relative', () => child.lcTarget || '', v => updateLcChild(item.id, child.id, 'lcTarget', v))}
+                    className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-target` ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-yellow-50'}`} />
                 </div>
-                {/* Condition */}
+                {/* Condition — input paths */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-purple-700 w-16 shrink-0">IF</span>
                   <input type="text" placeholder="condition  (e.g. item?.type.upper() == 'X')"
-                    value={child.condition || ''}
-                    onChange={e => updateLcChild(item.id, child.id, 'condition', e.target.value)}
-                    className="flex-1 px-2 py-1 border border-purple-300 rounded text-xs font-mono bg-purple-50 focus:outline-none" />
+                    {...makeBind(`lcif-${child.id}-cond`, 'root-input', () => child.condition || '', v => updateLcChild(item.id, child.id, 'condition', v))}
+                    className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-cond` ? 'border-purple-500 bg-purple-100' : 'border-purple-300 bg-purple-50'}`} />
                 </div>
-                {/* IF value */}
+                {/* IF value — input paths, append mode */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-purple-600 w-16 shrink-0 text-right">→ value</span>
                   <input type="text" placeholder="value when condition is true"
-                    value={child.ifExpr || ''}
-                    onChange={e => updateLcChild(item.id, child.id, 'ifExpr', e.target.value)}
-                    className="flex-1 px-2 py-1 border border-purple-200 rounded text-xs font-mono bg-white focus:outline-none" />
+                    {...makeBind(`lcif-${child.id}-if`, 'root-input', () => child.ifExpr || '', v => updateLcChild(item.id, child.id, 'ifExpr', v), true)}
+                    className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-if` ? 'border-green-400 bg-green-50' : 'border-purple-200 bg-white'}`} />
                 </div>
-                {/* ELSE value */}
+                {/* ELSE value — input paths, append mode */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-pink-700 w-16 shrink-0">ELSE →</span>
                   <input type="text" placeholder="value when condition is false"
-                    value={child.elseExpr || ''}
-                    onChange={e => updateLcChild(item.id, child.id, 'elseExpr', e.target.value)}
-                    className="flex-1 px-2 py-1 border border-pink-200 rounded text-xs font-mono bg-pink-50 focus:outline-none" />
+                    {...makeBind(`lcif-${child.id}-else`, 'root-input', () => child.elseExpr || '', v => updateLcChild(item.id, child.id, 'elseExpr', v), true)}
+                    className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-else` ? 'border-green-400 bg-green-50' : 'border-pink-200 bg-pink-50'}`} />
                 </div>
               </div>
             )}
@@ -1581,34 +1537,18 @@ const GrizzlyMappingTool = () => {
             onUpdate(upd);
           };
           const selFn = LC_FUNCS.find(f => f.name === (field.funcName||'now')) || LC_FUNCS[0];
-          const handleLcFieldTargetDrop = lcFieldContext ? (e) => {
-            e.preventDefault(); e.stopPropagation();
-            try {
-              const d = JSON.parse(e.dataTransfer.getData('application/json'));
-              if (d && d.path) {
-                const displayPath = stripSchemaPrefix(d.path);
-                onUpdate({ ...field, target: displayPath });
-              }
-            } catch {}
-          } : null;
-          const isFieldFocused = lcFieldContext && selectedInput?.field === 'lcFieldTarget' &&
-            selectedInput?.lcContext?.assignmentId === lcFieldContext.assignmentId &&
-            selectedInput?.lcContext?.elementId === lcFieldContext.elementId &&
-            selectedInput?.lcContext?.fieldId === lcFieldContext.fieldId;
+          const bindFieldTarget = makeBind(`fr-${fid}-target`, 'relative', () => field.target || '', v => onUpdate({ ...field, target: v }));
+          const bindFieldExpr   = makeBind(`fr-${fid}-expr`,   'root-input', () => field.expression || '', v => onUpdate({ ...field, expression: v }), true);
+          const isFieldFocused = selectedInput?.key === `fr-${fid}-target`;
           return (
             <div key={fid} className="border border-slate-100 rounded-lg bg-white overflow-hidden mb-1.5">
               {/* field path row */}
               <div className="flex items-center gap-2 px-2 pt-1.5 pb-0.5">
                 <span className="text-xs text-slate-300 w-10 shrink-0">field</span>
-                <div className="flex-1 min-w-0" onDrop={handleLcFieldTargetDrop} onDragOver={handleLcFieldTargetDrop ? handleDragOver : undefined}>
+                <div className="flex-1 min-w-0">
                   <input type="text"
-                    placeholder={lcFieldContext ? "drag from Input/Output schema or type path…" : "path — e.g.  version   or   createDatetime.datetime"}
-                    value={field.target || ''}
-                    onFocus={e => lcFieldContext ? handleInputFocus(e, null, null, lcFieldContext) : undefined}
-                    onChange={e => lcFieldContext
-                      ? handleInputChange(e, null, 'lcFieldTarget', lcFieldContext, (upd) => onUpdate({ ...field, ...upd }))
-                      : onUpdate({ ...field, target: e.target.value })
-                    }
+                    placeholder="drag from schema or type path…"
+                    {...bindFieldTarget}
                     className={`flex-1 w-full px-2 py-1 border rounded text-xs font-mono focus:outline-none ${isFieldFocused ? 'border-amber-500 bg-amber-50' : 'border-yellow-200 bg-yellow-50'}`} />
                 </div>
                 <button onClick={onDelete} className="p-1 text-red-200 hover:text-red-400 shrink-0"><Trash2 className="w-3 h-3"/></button>
@@ -1625,7 +1565,7 @@ const GrizzlyMappingTool = () => {
                     </button>
                   ))}
                 </div>
-                {et==='input'    && <input type="text"   placeholder="drag from Input or type path…" value={field.expression||''}  onChange={e=>onUpdate({...field,expression:e.target.value})}                                       className="flex-1 min-w-0 px-2 py-1 border border-green-300 rounded text-xs font-mono bg-green-50 focus:outline-none"/>}
+                {et==='input'    && <input type="text"   placeholder="drag from Input or type path…" {...bindFieldExpr}                                                                                                                        className={`flex-1 min-w-0 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key===`fr-${fid}-expr` ? 'border-green-400 bg-green-100' : 'border-green-300 bg-green-50'}`}/>}
                 {et==='static'   && <input type="text"   placeholder="type the value, e.g.  1.0.0"  value={field.staticValue||''} onChange={e=>sync('static',  {staticValue:e.target.value, funcName:field.funcName||'now', funcArgs:field.funcArgs||''})} className="flex-1 min-w-0 px-2 py-1 border border-slate-300 rounded text-xs bg-white focus:outline-none"/>}
                 {et==='number'   && <input type="number" placeholder="0"                            value={field.staticValue||''} onChange={e=>sync('number',  {staticValue:e.target.value, funcName:field.funcName||'now', funcArgs:field.funcArgs||''})} className="flex-1 min-w-0 px-2 py-1 border border-blue-300 rounded text-xs font-mono bg-blue-50 focus:outline-none"/>}
                 {et==='function' && (
@@ -1646,32 +1586,35 @@ const GrizzlyMappingTool = () => {
             <div className="border-2 border-blue-400 rounded-xl overflow-hidden shadow-sm">
 
               {/* Header: OUTPUT key + mode badge + Plain + delete */}
-              <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border-b border-blue-200">
-                <Move className="w-4 h-4 text-blue-300 cursor-move shrink-0" />
-                <div onDrop={handleTargetDrop} onDragOver={handleDragOver} className="flex-1">
+              <div className={`flex items-center gap-2 px-3 py-2 border-b ${lcMode==='object' ? 'bg-violet-50 border-violet-200' : 'bg-blue-50 border-blue-200'}`}>
+                <Move className={`w-4 h-4 cursor-move shrink-0 ${lcMode==='object' ? 'text-violet-300' : 'text-blue-300'}`} />
+                <div className="flex-1">
                   <input type="text" placeholder="OUTPUT key  (e.g.  AboutVersion)"
-                    value={item.target}
-                    onFocus={e => handleInputFocus(e, item.id, 'target')}
-                    onChange={e => handleInputChange(e, item.id, 'target')}
-                    className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id===item.id && selectedInput?.field==='target' ? 'border-blue-500 bg-yellow-100' : 'border-blue-300 bg-yellow-50'}`} />
+                    {...bindTarget}
+                    className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.key===`asgn-${item.id}-target`
+                      ? (lcMode==='object' ? 'border-violet-500 bg-yellow-100' : 'border-blue-500 bg-yellow-100')
+                      : (lcMode==='object' ? 'border-violet-300 bg-yellow-50' : 'border-blue-300 bg-yellow-50')}`} />
                 </div>
-                <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-1 rounded shrink-0">= [ … ]</span>
-                <button onClick={() => updateItem(item.id,'listComp',false)} className="px-2 py-1 text-xs text-blue-500 border border-blue-300 rounded hover:bg-blue-100 shrink-0">Plain</button>
+                <span className={`text-xs font-bold px-2 py-1 rounded shrink-0 font-mono ${lcMode==='object' ? 'text-violet-700 bg-violet-100' : 'text-blue-700 bg-blue-100'}`}>
+                  {lcMode==='object' ? '= { }' : '= [ … ]'}
+                </span>
                 <button onClick={() => deleteItem(item.id)} className="p-1.5 text-red-400 hover:text-red-600 rounded shrink-0"><Trash2 className="w-4 h-4"/></button>
               </div>
 
-              {/* Mode switcher */}
+              {/* Mode switcher — only shown for array modes (object mode has no sub-type) */}
+              {lcMode !== 'object' && (
               <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200">
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider shrink-0 mr-1">List type</span>
-                <button onClick={() => updateItem(item.id,'lcMode','static')}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${lcMode==='static' ? 'bg-amber-100 border-amber-400 text-amber-800' : 'bg-white border-slate-300 text-slate-500 hover:border-slate-400'}`}>
-                  📋 Static — fixed items I fill in
-                </button>
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider shrink-0 mr-1">Array type</span>
                 <button onClick={() => updateItem(item.id,'lcMode','dynamic')}
                   className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${lcMode==='dynamic' ? 'bg-green-100 border-green-400 text-green-800' : 'bg-white border-slate-300 text-slate-500 hover:border-slate-400'}`}>
                   🔄 Dynamic — loop over input array
                 </button>
+                <button onClick={() => updateItem(item.id,'lcMode','static')}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${lcMode==='static' ? 'bg-amber-100 border-amber-400 text-amber-800' : 'bg-white border-slate-300 text-slate-500 hover:border-slate-400'}`}>
+                  📋 Static — fixed items I fill in
+                </button>
               </div>
+              )}
 
               {/* ══ STATIC body ════════════════════════════════════════════════════ */}
               {lcMode==='static' && (
@@ -1722,6 +1665,43 @@ const GrizzlyMappingTool = () => {
                 </div>
               )}
 
+              {/* ══ OBJECT body ═══════════════════════════════════════════════════ */}
+              {lcMode==='object' && (() => {
+                // Object mode: single set of fields, assigned as a dict (no array wrapper)
+                const objEl = (item.lcElements && item.lcElements[0]) || { id: uid(), fields: [] };
+                // Ensure element exists in state
+                if (!item.lcElements || item.lcElements.length === 0) {
+                  updateItem(item.id, 'lcElements', [objEl]);
+                }
+                return (
+                  <div className="p-3 bg-white">
+                    <div className="border border-violet-200 rounded-xl overflow-hidden">
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-violet-50 border-b border-violet-100">
+                        <span className="text-xs font-bold text-violet-800">&#123; &#125; Fields</span>
+                        <span className="text-xs text-violet-400 ml-1">({(objEl.fields||[]).length} field{(objEl.fields||[]).length!==1?'s':''})</span>
+                      </div>
+                      <div className="p-2">
+                        {(objEl.fields||[]).length===0 && (
+                          <p className="text-xs text-slate-300 text-center py-3">No fields yet — click + Add Field below</p>
+                        )}
+                        {(objEl.fields||[]).map(field =>
+                          renderFieldRow(
+                            field.id, field,
+                            (updated) => replaceLcElementField(item.id, objEl.id, field.id, updated),
+                            () => deleteLcElementField(item.id, objEl.id, field.id),
+                            { assignmentId: item.id, elementId: objEl.id, fieldId: field.id }
+                          )
+                        )}
+                        <button onClick={() => addLcElementField(item.id, objEl.id)}
+                          className="w-full mt-1 px-3 py-1.5 border border-dashed border-violet-300 text-violet-600 rounded-lg text-xs hover:bg-violet-50 flex items-center justify-center gap-1">
+                          <Plus className="w-3 h-3"/> Add Field
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ══ DYNAMIC body (FOR loop) ════════════════════════════════════════ */}
               {lcMode==='dynamic' && (
                 <>
@@ -1735,10 +1715,10 @@ const GrizzlyMappingTool = () => {
                       onChange={e => updateItem(item.id,'lcIterator',e.target.value)}
                       className="w-24 px-2 py-1.5 border border-green-300 rounded text-sm font-mono bg-white focus:outline-none"/>
                     <span className="font-bold text-green-800 text-sm">IN</span>
-                    <div className="flex-1" onDrop={handleLcIterableDrop} onDragOver={handleDragOver}>
-                      <input type="text" placeholder="Drag array field or type (e.g. input.items)" value={item.lcIterable||''}
-                        onFocus={e => handleInputFocus(e, item.id,'lcIterable')} onChange={e => handleInputChange(e, item.id,'lcIterable')}
-                        className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.id===item.id&&selectedInput?.field==='lcIterable' ? 'border-green-500 bg-green-200' : 'border-green-300 bg-white'}`}/>
+                    <div className="flex-1">
+                      <input type="text" placeholder="Drag array field or type (e.g. input.items)"
+                        {...bindIterable}
+                        className={`w-full px-3 py-1.5 border rounded text-sm font-mono focus:outline-none ${selectedInput?.key===`asgn-${item.id}-iterable` ? 'border-green-500 bg-green-200' : 'border-green-300 bg-white'}`}/>
                     </div>
                   </div>
                   {/* FOR body */}
@@ -1800,10 +1780,10 @@ const GrizzlyMappingTool = () => {
       const renderValueInput = () => {
         if (exprType === 'input') {
           return (
-            <div onDrop={handleExpressionDrop} onDragOver={handleDragOver} className="flex-1 min-w-0 relative">
-              <input type="text" placeholder="Drag from Input schema or type path…" value={item.expression}
-                onFocus={e => handleInputFocus(e, item.id, 'expression')} onChange={e => handleInputChange(e, item.id, 'expression')}
-                className={`w-full px-3 py-2 border rounded focus:outline-none text-sm font-mono ${selectedInput?.id === item.id && selectedInput?.field === 'expression' ? 'border-green-500 bg-green-100' : 'border-green-300 bg-green-50'}`} />
+            <div className="flex-1 min-w-0 relative">
+              <input type="text" placeholder="Drag from Input schema or type path…"
+                {...bindExpr}
+                className={`w-full px-3 py-2 border rounded focus:outline-none text-sm font-mono ${selectedInput?.key === `asgn-${item.id}-expr` ? 'border-green-500 bg-green-100' : 'border-green-300 bg-green-50'}`} />
             </div>
           );
         }
@@ -1857,15 +1837,11 @@ const GrizzlyMappingTool = () => {
             <div className="flex items-center gap-2 px-3 pt-2.5 pb-1">
               <Move className="w-3.5 h-3.5 text-gray-300 cursor-move shrink-0" />
               <span className="text-xs text-slate-400 shrink-0 w-14">Output</span>
-              <div onDrop={handleTargetDrop} onDragOver={handleDragOver} className="flex-1">
-                <input type="text" placeholder="Output field  (drag from Output schema or type)" value={item.target}
-                  onFocus={e => handleInputFocus(e, item.id, 'target')} onChange={e => handleInputChange(e, item.id, 'target')}
-                  className={`w-full px-3 py-1.5 border rounded focus:outline-none text-sm ${selectedInput?.id === item.id && selectedInput?.field === 'target' ? 'border-blue-500 bg-yellow-100' : 'border-yellow-300 bg-yellow-50'}`} />
+              <div className="flex-1">
+                <input type="text" placeholder="Output field  (drag from Output schema or type)"
+                  {...bindTarget}
+                  className={`w-full px-3 py-1.5 border rounded focus:outline-none text-sm ${selectedInput?.key === `asgn-${item.id}-target` ? 'border-blue-500 bg-yellow-100' : 'border-yellow-300 bg-yellow-50'}`} />
               </div>
-              {/* List comp toggle */}
-              <button onClick={() => { updateItem(item.id, 'listComp', true); setExpandedBlocks(prev => new Set([...prev, item.id + '_lc'])); }}
-                title="Switch to List Comprehension mode (for array outputs)"
-                className="px-2 py-1 text-xs text-blue-500 border border-blue-200 rounded hover:bg-blue-50 shrink-0 font-mono">[ … ]</button>
               <button onClick={() => deleteItem(item.id)} className="p-1.5 text-gray-300 hover:text-red-500 rounded opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -1894,8 +1870,8 @@ const GrizzlyMappingTool = () => {
       // Helper: add-item bar used inside IF/ELIF/ELSE bodies
       const addBar = (parentId, borderColor, textColor, hoverColor) => (
         <div className="flex gap-2 mt-2 pl-6">
-          <button onClick={() => addItem(parentId, 'variable')}  className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> Variable</button>
-          <button onClick={() => addItem(parentId, 'assignment')} className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> Assignment</button>
+          <button onClick={() => addItem(parentId, 'variable')}  className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Code className="w-3 h-3" /> Variable</button>
+          <button onClick={() => addItem(parentId, 'assignment')} className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><ArrowRight className="w-3 h-3" /> Map Field</button>
           <button onClick={() => addItem(parentId, 'if')}         className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> If</button>
           <button onClick={() => addItem(parentId, 'for')}        className={`px-3 py-1.5 bg-white border ${borderColor} ${textColor} rounded ${hoverColor} text-xs flex items-center gap-1`}><Plus className="w-3 h-3" /> For</button>
         </div>
@@ -1914,11 +1890,9 @@ const GrizzlyMappingTool = () => {
               <input
                 type="text"
                 placeholder="Condition (e.g., item?.accountNumber == 1234)"
-                value={item.condition}
-                onFocus={(e) => handleInputFocus(e, item.id, 'condition')}
-                onChange={(e) => handleInputChange(e, item.id, 'condition')}
+                {...makeBind(`if-${item.id}-cond`, 'root-input', () => item.condition, v => updateItem(item.id, 'condition', v))}
                 className={`flex-1 px-3 py-2 border rounded focus:outline-none text-sm font-mono ${
-                  selectedInput?.id === item.id && selectedInput?.field === 'condition'
+                  selectedInput?.key === `if-${item.id}-cond`
                     ? 'border-purple-500 bg-purple-200' : 'border-purple-300 bg-white'
                 }`}
               />
@@ -1945,14 +1919,9 @@ const GrizzlyMappingTool = () => {
                 <input
                   type="text"
                   placeholder="Condition"
-                  value={elif.condition}
-                  onFocus={(e) => handleInputFocus(e, elif.id, 'condition')}
-                  onChange={(e) => {
-                    handleInputChange(e, elif.id, 'condition');
-                    updateElifCondition(item.id, elifIdx, e.target.value);
-                  }}
+                  {...makeBind(`elif-${elif.id}-cond`, 'root-input', () => elif.condition, v => updateElifCondition(item.id, elifIdx, v))}
                   className={`flex-1 px-3 py-2 border rounded focus:outline-none text-sm font-mono ${
-                    selectedInput?.id === elif.id && selectedInput?.field === 'condition'
+                    selectedInput?.key === `elif-${elif.id}-cond`
                       ? 'border-indigo-500 bg-indigo-200' : 'border-indigo-300 bg-white'
                   }`}
                 />
@@ -2023,28 +1992,13 @@ const GrizzlyMappingTool = () => {
                 className="w-32 px-3 py-2 border border-green-300 rounded focus:outline-none focus:border-gray-400 text-sm font-mono bg-white"
               />
               <span className="text-green-900 font-semibold">IN</span>
-              <div
-                className="flex-1 relative"
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  try {
-                    const dragData = JSON.parse(e.dataTransfer.getData('application/json'));
-                    if (dragData && dragData.isInput) {
-                      updateItem(item.id, 'iterable', dragData.path);
-                    }
-                  } catch (err) { /* ignore */ }
-                }}
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              >
+              <div className="flex-1 relative">
               <input
                 type="text"
                 placeholder="Drag array field or type (e.g., input.accounts)"
-                value={item.iterable}
-                onFocus={(e) => handleInputFocus(e, item.id, 'iterable')}
-                onChange={(e) => handleInputChange(e, item.id, 'iterable')}
+                {...makeBind(`for-${item.id}-iterable`, 'root-input', () => item.iterable, v => updateItem(item.id, 'iterable', v))}
                 className={`w-full px-3 py-2 border rounded focus:outline-none focus:border-gray-400 text-sm font-mono ${
-                  selectedInput?.id === item.id && selectedInput?.field === 'iterable'
+                  selectedInput?.key === `for-${item.id}-iterable`
                     ? 'border-green-500 bg-green-200'
                     : 'border-green-300 bg-white'
                 }`}
@@ -2365,6 +2319,17 @@ const GrizzlyMappingTool = () => {
                 _staticMeta: { elements: item.lcElements || [], rootKey }
               }]
             });
+          } else if (lcMode === 'object') {
+            // Object mode: emit a single dict (no array wrapper)
+            groups.push({
+              rootKey,
+              assignments: [{
+                type: 'assignment',
+                cleanedTarget: `${rootKey}.__objectDict__`,
+                expression: '',
+                _objectMeta: { fields: (item.lcElements && item.lcElements[0] && item.lcElements[0].fields) || [], rootKey }
+              }]
+            });
           } else {
             // Dynamic list: FOR loop / list comprehension
             groups.push({
@@ -2508,7 +2473,52 @@ const GrizzlyMappingTool = () => {
             return;
           }
 
-                    // For-loop → list comprehension hoisted to OUTPUT["key"] = [...]
+          // Object dict → OUTPUT["key"] = { "field1": val1, "field2": val2 }
+          if (assignments.length === 1 && assignments[0]._objectMeta) {
+            const { fields: objFields, rootKey: rk } = assignments[0]._objectMeta;
+            // Reuse renderStaticDict to build a nested dict from flat field paths
+            const renderObjDict = (fields, depth) => {
+              const ii0 = '    '.repeat(depth);
+              const ii1 = '    '.repeat(depth + 1);
+              if (!fields || fields.length === 0) return [`${ii0}{}`];
+              const struct = {};
+              fields.forEach(f => {
+                if (!f.target) return;
+                const parts = f.target.trim().split('.');
+                let cur = struct;
+                for (let i = 0; i < parts.length - 1; i++) {
+                  if (!cur[parts[i]]) cur[parts[i]] = {};
+                  cur = cur[parts[i]];
+                }
+                cur[parts[parts.length - 1]] = f.expression || '""';
+              });
+              const dictToLines = (obj, d) => {
+                const a0 = '    '.repeat(d);
+                const a1 = '    '.repeat(d + 1);
+                const ents = Object.entries(obj);
+                if (ents.length === 0) return [`${a0}{}`];
+                const out = [`${a0}{`];
+                ents.forEach(([k, v], idx) => {
+                  const comma = idx < ents.length - 1 ? ',' : '';
+                  if (typeof v === 'string') {
+                    out.push(`${a1}"${k}": ${v}${comma}`);
+                  } else {
+                    const child = dictToLines(v, d + 1);
+                    out.push(`${a1}"${k}": ${child[0].trim()}`);
+                    child.slice(1, -1).forEach(l => out.push(l));
+                    out.push(`${child[child.length-1]}${comma}`);
+                  }
+                });
+                out.push(`${a0}}`);
+                return out;
+              };
+              return dictToLines(struct, depth);
+            };
+            const dictLines = renderObjDict(objFields, indent + 1);
+            lines.push(`${pre}OUTPUT["${rk}"] = ${dictLines[0].trim()}`);
+            dictLines.slice(1).forEach(l => lines.push(l));
+            return;
+          }
           if (assignments.length === 1 && assignments[0]._forMeta) {
             const { iterator, iterable, isFromListComp } = assignments[0]._forMeta;
 
@@ -2916,18 +2926,61 @@ const GrizzlyMappingTool = () => {
               >
                 <Layers className="w-4 h-4" /> Import Module
               </button>
-              <button onClick={() => addItem(null, 'assignment')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
-                <Plus className="w-4 h-4" /> Add Assignment
-              </button>
-              <button onClick={() => addItem(null, 'variable')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
+
+              {/* ── Add Variable ── */}
+              <button
+                onClick={() => addItem(null, 'variable')}
+                className="px-4 py-2 bg-slate-50 border-2 border-dashed border-slate-300 text-slate-600 rounded-lg hover:bg-slate-100 flex items-center gap-2 text-sm"
+              >
                 <Code className="w-4 h-4" /> Add Variable
               </button>
-              <button onClick={() => addItem(null, 'if')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
-                <Plus className="w-4 h-4" /> Add If
+
+              {/* ── Map Field (plain assignment) ── */}
+              <button
+                onClick={() => addItem(null, 'assignment')}
+                className="px-4 py-2 bg-yellow-50 border-2 border-dashed border-yellow-300 text-yellow-700 rounded-lg hover:bg-yellow-100 flex items-center gap-2 text-sm"
+              >
+                <ArrowRight className="w-4 h-4" /> Map Field
               </button>
-              <button onClick={() => addItem(null, 'for')} className="px-4 py-2 bg-gray-100 border-2 border-dashed border-gray-300 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2 text-sm">
-                <Plus className="w-4 h-4" /> Add For
+
+              {/* ── Map Object (listComp + object mode) ── */}
+              <button
+                onClick={() => {
+                  const newItem = {
+                    id: generateId(), type: 'assignment',
+                    target: '', expression: '', exprType: 'input',
+                    staticValue: '', funcName: '', funcArgs: '',
+                    listComp: true, lcMode: 'object',
+                    lcIterator: 'item', lcIterable: '',
+                    lcChildren: [], lcElements: [{ id: uid(), fields: [] }],
+                  };
+                  updateModuleMappings(activeModule, [...mappings, newItem]);
+                }}
+                className="px-4 py-2 bg-violet-50 border-2 border-dashed border-violet-300 text-violet-700 rounded-lg hover:bg-violet-100 flex items-center gap-2 text-sm"
+              >
+                <span className="font-mono font-bold text-base leading-none">{'{}'}</span> Map Object
               </button>
+
+              {/* ── Map Array (listComp + dynamic mode, auto-expand) ── */}
+              <button
+                onClick={() => {
+                  const newId = generateId();
+                  const newItem = {
+                    id: newId, type: 'assignment',
+                    target: '', expression: '', exprType: 'input',
+                    staticValue: '', funcName: '', funcArgs: '',
+                    listComp: true, lcMode: 'dynamic',
+                    lcIterator: 'item', lcIterable: '',
+                    lcChildren: [], lcElements: [{ id: uid(), fields: [] }],
+                  };
+                  updateModuleMappings(activeModule, [...mappings, newItem]);
+                  setExpandedBlocks(prev => new Set([...prev, newId + '_lc']));
+                }}
+                className="px-4 py-2 bg-blue-50 border-2 border-dashed border-blue-300 text-blue-700 rounded-lg hover:bg-blue-100 flex items-center gap-2 text-sm"
+              >
+                <span className="font-mono font-bold text-sm leading-none">[…]</span> Map Array
+              </button>
+
             </div>
           </div>
         </div>
