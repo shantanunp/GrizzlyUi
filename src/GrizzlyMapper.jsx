@@ -2113,9 +2113,33 @@ const GrizzlyMappingTool = () => {
     const rootKeyOf = (cleanedTarget) => cleanedTarget.replace(/\[\*\]/g, '').split('.')[0];
 
     // Normalise expression: replace 'input.' prefix with 'INPUT?.'
+    // and ensure all property accesses use ?. to avoid null pointer errors
+    const addSafeNav = (expr) => {
+      if (!expr) return expr;
+      // Replace every bare '.' that is NOT already preceded by '?' with '?.'
+      // Skip dots inside string literals (single or double quoted)
+      let result = '';
+      let inSingle = false, inDouble = false;
+      for (let i = 0; i < expr.length; i++) {
+        const ch = expr[i];
+        if (ch === "'" && !inDouble) { inSingle = !inSingle; result += ch; continue; }
+        if (ch === '"' && !inSingle) { inDouble = !inDouble; result += ch; continue; }
+        if (!inSingle && !inDouble && ch === '.' && expr[i - 1] !== '?') {
+          result += '?.';
+        } else {
+          result += ch;
+        }
+      }
+      return result;
+    };
+
     const cleanExpr = (expr) => {
       if (!expr) return '""';
-      return expr.replace(/\binput\./gi, 'INPUT?.');
+      // 1. Replace input. prefix with INPUT?.
+      let e = expr.replace(/\binput\./gi, 'INPUT?.');
+      // 2. Ensure all remaining dot-navigations are safe ?.
+      e = addSafeNav(e);
+      return e;
     };
 
     // Inside a for-loop body rewrite expressions: INPUT?.accounts[*].foo → iterator?.foo
@@ -2427,7 +2451,7 @@ const GrizzlyMappingTool = () => {
                   if (!cur[parts[i]]) cur[parts[i]] = {};
                   cur = cur[parts[i]];
                 }
-                cur[parts[parts.length - 1]] = f.expression || '""';
+                cur[parts[parts.length - 1]] = cleanExpr(f.expression);
               });
               const dictToLines = (obj, d) => {
                 const ii0 = '    '.repeat(d);
@@ -2489,7 +2513,7 @@ const GrizzlyMappingTool = () => {
                   if (!cur[parts[i]]) cur[parts[i]] = {};
                   cur = cur[parts[i]];
                 }
-                cur[parts[parts.length - 1]] = f.expression || '""';
+                cur[parts[parts.length - 1]] = cleanExpr(f.expression);
               });
               const dictToLines = (obj, d) => {
                 const a0 = '    '.repeat(d);
