@@ -118,24 +118,51 @@ const parseTemplate = (pythonCode) => {
     if (/^-?\d+(\.\d+)?$/.test(raw)) {
       return { exprType: 'number', staticValue: raw, expression: raw, funcName: 'now', funcArgs: '' };
     }
-    const fnMatch = raw.match(/^([a-zA-Z_]\w*)\((.+)\)$/s);
+    const fnMatch = raw.match(/^([a-zA-Z_]\w*)\((.*)?\)$/s);
     if (fnMatch && !/^(INPUT|input)/.test(raw)) {
-      const KNOWN = ['now','formatDate','today','uuid','upper','lower','concat','coalesce'];
       const name = fnMatch[1];
-      const args = fnMatch[2].trim();
-      if (KNOWN.includes(name)) {
-        return { exprType: 'function', funcName: name, funcArgs: args, expression: raw, staticValue: '' };
-      }
+      const args = (fnMatch[2] || '').trim();
+      return { exprType: 'function', funcName: name, funcArgs: args, expression: raw, staticValue: '' };
     }
-    const normalized = raw.replace(/^INPUT\??\./i, 'input.');
+    const normalized = raw
+      .replace(/^INPUT\??\./i, 'input.')           // leading INPUT?. prefix
+      .replace(/\bINPUT\??\.(?=\w)/gi, 'input.');  // INPUT?. anywhere else in expr
     return { exprType: 'input', expression: normalized, staticValue: '', funcName: 'now', funcArgs: '' };
   };
 
-  // Detect multi-line ternary: ( ifVal \n if (cond) \n else elseVal )
+  // Detect (chained) ternary: ( val1 if (cond1) else val2 if (cond2) … else default )
   const parseTernary = (text) => {
-    const m = text.match(/\(\s*([\s\S]+?)\s+if\s+\(([\s\S]+?)\)\s+else\s+([\s\S]+?)\s*\)/s);
-    if (m) return { condition: m[2].trim(), ifExpr: m[1].trim(), elseExpr: m[3].trim() };
-    return null;
+    text = text.trim();
+    if (!text.startsWith('(') || !text.endsWith(')')) return null;
+    let inner = text.slice(1, -1).trim();
+
+    const branches = [];
+    while (inner.length > 0) {
+      const m = inner.match(/^([\s\S]+?)\s+if\s+\(/);
+      if (!m) break;
+      const value = m[1].trim();
+      if (!value) break;
+      const afterParen = inner.slice(m[0].length);
+      let depth = 1, condEnd = -1;
+      for (let i = 0; i < afterParen.length; i++) {
+        if (afterParen[i] === '(') depth++;
+        if (afterParen[i] === ')') { depth--; if (depth === 0) { condEnd = i; break; } }
+      }
+      if (condEnd === -1) break;
+      branches.push({ expr: value, condition: afterParen.slice(0, condEnd).trim() });
+      inner = afterParen.slice(condEnd + 1).trim();
+      const em = inner.match(/^else\b\s*/);
+      if (em) { inner = inner.slice(em[0].length); } else { inner = ''; break; }
+    }
+
+    if (branches.length === 0) return null;
+    const elseExpr = inner.trim() || 'None';
+    return {
+      condition: branches[0].condition,
+      ifExpr: branches[0].expr,
+      elifBranches: branches.slice(1).map(b => ({ condition: b.condition, expr: b.expr })),
+      elseExpr,
+    };
   };
 
   // Split text at top-level commas
@@ -159,7 +186,7 @@ const parseTemplate = (pythonCode) => {
     const entries = splitTopLevel(dictText);
     for (const entry of entries) {
       if (!entry) continue;
-      const km = entry.match(/^"([^"]+)"\s*:\s*([\s\S]+)$/s);
+      const km = entry.match(/^"{1,2}([^"]+)"{1,2}\s*:\s*([\s\S]+)$/s);
       if (!km) continue;
       const key = km[1];
       const val = km[2].trim();
@@ -169,7 +196,7 @@ const parseTemplate = (pythonCode) => {
       } else {
         const ternary = parseTernary(val);
         if (ternary) {
-          fields.push({ id: uid(), path: fullPath, isTernary: true, ...ternary });
+          fields.push({ id: uid(), path: fullPath, isTernary: true, ...ternary, elifBranches: ternary.elifBranches || [] });
         } else {
           fields.push({ id: uid(), path: fullPath, isTernary: false, ...parseScalar(val) });
         }
@@ -219,7 +246,7 @@ const parseTemplate = (pythonCode) => {
         const childFields = flattenDict(dictPart);
         const lcChildren = childFields.map(f => {
           if (f.isTernary) {
-            return { id: uid(), type: 'if', lcTarget: f.path, condition: f.condition, ifExpr: f.ifExpr, elseExpr: f.elseExpr };
+            return { id: uid(), type: 'if', lcTarget: f.path, condition: f.condition, ifExpr: f.ifExpr, elifBranches: f.elifBranches || [], elseExpr: f.elseExpr };
           }
           return { id: uid(), type: 'assignment', target: f.path, expression: f.expression, exprType: f.exprType, staticValue: f.staticValue || '', funcName: f.funcName || 'now', funcArgs: f.funcArgs || '' };
         });
@@ -317,7 +344,10 @@ const parseTemplate = (pythonCode) => {
       currentModule.mappings.push({
         id: uid(), type: 'variable',
         varName: varMatch[1],
-        expression: (varMatch[2] || '').replace(/^INPUT\??\./i, 'input.').trim()
+        expression: (varMatch[2] || '')
+          .replace(/^INPUT\??\./i, 'input.')
+          .replace(/\bINPUT\??\.(?=\w)/gi, 'input.')
+          .trim()
       });
       i++; continue;
     }
@@ -410,6 +440,51 @@ const getAllExpandedIds = (inputSchema, outputSchema) => {
   return new Set(['input', 'output', ...inputIds, ...outputIds]);
 };
 
+// ── AI Provider Config ────────────────────────────────────────────────────────
+// Swap provider here without touching any other code.
+// Each provider needs: url, headers, buildBody(prompt), extractText(responseJson)
+const AI_PROVIDER_CONFIG = {
+
+  // ── Anthropic (Claude) ───────────────────────────────────────────────────
+  anthropic: {
+    url: 'https://api.anthropic.com/v1/messages',
+    headers: { 'Content-Type': 'application/json' },
+    buildBody: (prompt) => JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+    extractText: (data) =>
+      (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim(),
+  },
+
+  // ── OpenAI (GPT) ─────────────────────────────────────────────────────────
+  // openai: {
+  //   url: 'https://api.openai.com/v1/chat/completions',
+  //   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer YOUR_KEY' },
+  //   buildBody: (prompt) => JSON.stringify({
+  //     model: 'gpt-4o',
+  //     messages: [{ role: 'user', content: prompt }],
+  //   }),
+  //   extractText: (data) => data.choices?.[0]?.message?.content?.trim() ?? '',
+  // },
+
+  // ── Google Gemini ────────────────────────────────────────────────────────
+  // gemini: {
+  //   url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=YOUR_KEY',
+  //   headers: { 'Content-Type': 'application/json' },
+  //   buildBody: (prompt) => JSON.stringify({
+  //     contents: [{ parts: [{ text: prompt }] }],
+  //   }),
+  //   extractText: (data) =>
+  //     data.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() ?? '',
+  // },
+};
+
+// Change this one line to switch provider: 'anthropic' | 'openai' | 'gemini'
+const ACTIVE_AI_PROVIDER = 'anthropic';
+// ─────────────────────────────────────────────────────────────────────────────
+
 const GrizzlyMappingTool = () => {
   const [step, setStep] = useState(1);
   const [inputSchema, setInputSchema] = useState(defaultInputSchema);
@@ -422,6 +497,101 @@ const GrizzlyMappingTool = () => {
   const [activeModule, setActiveModule] = useState(0);
   const [renamingModuleIdx, setRenamingModuleIdx] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+
+  // ── Registered Functions ─────────────────────────────────────────────────
+  const BUILTIN_REG_FUNCTIONS = [
+    { id: 'rf_now',        name: 'now',        desc: 'Current date and time',               args: false, builtin: true },
+    { id: 'rf_formatDate', name: 'formatDate', desc: 'Format a date value',                 args: true,  builtin: true, argsPlaceholder: 'now(), "yyyy-MM-dd HH:mm:ss"' },
+  ];
+  const [registeredFunctions, setRegisteredFunctions] = useState(BUILTIN_REG_FUNCTIONS);
+  const [showRegFnPanel, setShowRegFnPanel] = useState(false);
+  const [showFnSheet, setShowFnSheet] = useState(false);
+  const [regFnForm, setRegFnForm] = useState(null); // null = closed, {} = new/edit
+  const [regFnExpanded, setRegFnExpanded] = useState(new Set());
+
+  const allFunctions = registeredFunctions; // single source of truth
+
+  // ── Generic AI function writer ───────────────────────────────────────────
+  // Uses ACTIVE_AI_PROVIDER + AI_PROVIDER_CONFIG — swap provider at the top of the file.
+  const callAiApi = (description) => {
+    const provider = AI_PROVIDER_CONFIG[ACTIVE_AI_PROVIDER];
+    const prompt =
+      `Write a Python helper function for a data transformation pipeline.\n` +
+      `Description: "${description}"\n\n` +
+      `Rules:\n` +
+      `- Start with def function_name(...):\n` +
+      `- Use a clear, descriptive snake_case function name\n` +
+      `- Add a one-line docstring\n` +
+      `- Keep it concise and practical\n` +
+      `- Return only the raw Python code, no markdown, no explanation`;
+    return fetch(provider.url, {
+      method: 'POST',
+      headers: provider.headers,
+      body: provider.buildBody(prompt),
+    })
+      .then(r => r.json())
+      .then(data => provider.extractText(data));
+  };
+  // ────────────────────────────────────────────────────────────────────────
+
+  const toggleRegFnExpand = (id) => setRegFnExpanded(prev => {
+    const n = new Set(prev);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+
+  const openRegFnForm = () => setRegFnForm({ desc: '', body: '' });
+  const closeRegFnForm = () => setRegFnForm(null);
+
+  // Parse "def funcname(a, b, c):" from the first def line in the body
+  const parseDefLine = (body) => {
+    const m = (body || '').trim().match(/^def\s+([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*:/m);
+    if (!m) return { name: '', params: [] };
+    const name = m[1];
+    const params = m[2].split(',').map(p => p.trim()).filter(p => p && p !== 'self').map(p => ({ id: uid(), name: p.replace(/[=:].*/,'').trim(), hint: '' }));
+    return { name, params };
+  };
+
+  // Inject """desc""" as the first line inside a def body if not already present
+  const injectDocstring = (body, desc) => {
+    if (!desc.trim()) return body;
+    const lines = body.split('\n');
+    const defIdx = lines.findIndex(l => l.trim().match(/^def\s+/));
+    if (defIdx === -1) return body;
+    const afterDef = defIdx + 1;
+    // Check if docstring already present
+    if (afterDef < lines.length && lines[afterDef].trim().startsWith('"""')) return body;
+    // Find indentation of the body (use next non-empty line or default 4 spaces)
+    const bodyLine = lines.slice(afterDef).find(l => l.trim());
+    const indent = bodyLine ? bodyLine.match(/^(\s*)/)[1] : '    ';
+    const docLines = [`${indent}"""${desc.trim()}"""`];
+    lines.splice(afterDef, 0, ...docLines);
+    return lines.join('\n');
+  };
+
+  const saveRegFn = () => {
+    const body = regFnForm?.body?.trim();
+    if (!body) return;
+    const { name, params } = parseDefLine(body);
+    if (!name) return;
+    const desc = regFnForm.desc.trim() || `${name} helper`;
+    const finalBody = injectDocstring(body, desc);
+    const newFn = {
+      id: uid(),
+      name,
+      desc,
+      args: params.length > 0,
+      argsPlaceholder: params.map(p => p.name).join(', '),
+      params,
+      body: finalBody,
+      builtin: false,
+    };
+    setRegisteredFunctions(prev => [...prev, newFn]);
+    setRegFnExpanded(prev => new Set([...prev, newFn.id]));
+    closeRegFnForm();
+  };
+
+  const deleteRegFn = (id) => setRegisteredFunctions(prev => prev.filter(f => f.id !== id));
 
   const mappings = modules[activeModule]?.mappings || [];
 
@@ -1285,7 +1455,7 @@ const GrizzlyMappingTool = () => {
     const addLcChild = (assignmentId, type) => {
     const newChild = { id: generateId(), type };
     if (type === 'assignment') { newChild.target = ''; newChild.expression = ''; }
-    else if (type === 'if') { newChild.lcTarget = ''; newChild.condition = ''; newChild.ifExpr = ''; newChild.elseExpr = ''; }
+    else if (type === 'if') { newChild.lcTarget = ''; newChild.condition = ''; newChild.ifExpr = ''; newChild.elifBranches = []; newChild.elseExpr = ''; }
     const updateInItems = (items) => items.map(item => {
       if (item.id === assignmentId) return { ...item, lcChildren: [...(item.lcChildren || []), newChild] };
       let u = { ...item };
@@ -1315,6 +1485,58 @@ const GrizzlyMappingTool = () => {
   const deleteLcChild = (assignmentId, childId) => {
     const updateInItems = (items) => items.map(item => {
       if (item.id === assignmentId) return { ...item, lcChildren: (item.lcChildren || []).filter(c => c.id !== childId) };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const addLcChildElifBranch = (assignmentId, childId) => {
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => {
+          if (c.id !== childId) return c;
+          return { ...c, elifBranches: [...(c.elifBranches || []), { condition: '', expr: '' }] };
+        })};
+      }
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const updateLcChildElifBranch = (assignmentId, childId, elifIdx, field, value) => {
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => {
+          if (c.id !== childId) return c;
+          const updated = (c.elifBranches || []).map((eb, i) => i === elifIdx ? { ...eb, [field]: value } : eb);
+          return { ...c, elifBranches: updated };
+        })};
+      }
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const deleteLcChildElifBranch = (assignmentId, childId, elifIdx) => {
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => {
+          if (c.id !== childId) return c;
+          return { ...c, elifBranches: (c.elifBranches || []).filter((_, i) => i !== elifIdx) };
+        })};
+      }
       let u = { ...item };
       if (u.children) u = { ...u, children: updateInItems(u.children) };
       if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
@@ -1454,18 +1676,19 @@ const GrizzlyMappingTool = () => {
       const bindExpr     = makeBind(`asgn-${item.id}-expr`,     'root-input',  () => item.expression,  v => updateItem(item.id, 'expression', v), true);
       const bindIterable = makeBind(`asgn-${item.id}-iterable`, 'root-input',  () => item.lcIterable || '', v => updateItem(item.id, 'lcIterable', v));
 
-      // Render a compact IF/ELSE ternary block inside the list comp body.
-      // Data model: child.lcTarget (output path), child.condition, child.ifExpr, child.elseExpr
+      // Render a compact IF / ELIF / ELSE ternary block inside the list comp body.
       const renderLcIf = (child) => {
         const isExp = expandedBlocks.has(child.id);
+        const elifBranches = child.elifBranches || [];
         return (
           <div key={child.id} className="my-1 border border-purple-300 rounded-lg overflow-hidden">
-            {/* Header: collapse toggle + IF/ELSE label + delete */}
             <div className="flex items-center gap-2 px-2 py-1.5 bg-purple-100">
               <button onClick={() => toggleBlock(child.id)} className="p-0.5 text-purple-600">
                 {isExp ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
               </button>
-              <span className="font-bold text-purple-800 text-xs">IF / ELSE  ternary</span>
+              <span className="font-bold text-purple-800 text-xs">
+                {elifBranches.length > 0 ? 'IF / ELIF / ELSE  ternary' : 'IF / ELSE  ternary'}
+              </span>
               {!isExp && child.lcTarget && (
                 <span className="text-xs text-purple-500 font-mono truncate">{child.lcTarget}</span>
               )}
@@ -1473,31 +1696,55 @@ const GrizzlyMappingTool = () => {
             </div>
             {isExp && (
               <div className="p-2 space-y-1.5 bg-white">
-                {/* Output field path — relative, no prefix */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-slate-500 w-16 shrink-0">field path</span>
                   <input type="text" placeholder="e.g. field.nested.value"
                     {...makeBind(`lcif-${child.id}-target`, 'relative', () => child.lcTarget || '', v => updateLcChild(item.id, child.id, 'lcTarget', v))}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-target` ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-yellow-50'}`} />
                 </div>
-                {/* Condition — input paths */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-purple-700 w-16 shrink-0">IF</span>
-                  <input type="text" placeholder="condition  (e.g. item?.type.upper() == 'X')"
+                  <input type="text" placeholder="condition  (e.g. item?.type == 'X')"
                     {...makeBind(`lcif-${child.id}-cond`, 'root-input', () => child.condition || '', v => updateLcChild(item.id, child.id, 'condition', v))}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-cond` ? 'border-purple-500 bg-purple-100' : 'border-purple-300 bg-purple-50'}`} />
                 </div>
-                {/* IF value — input paths, append mode */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-purple-600 w-16 shrink-0 text-right">→ value</span>
                   <input type="text" placeholder="value when condition is true"
                     {...makeBind(`lcif-${child.id}-if`, 'root-input', () => child.ifExpr || '', v => updateLcChild(item.id, child.id, 'ifExpr', v), true)}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-if` ? 'border-green-400 bg-green-50' : 'border-purple-200 bg-white'}`} />
                 </div>
-                {/* ELSE value — input paths, append mode */}
+                {/* ELIF branches */}
+                {elifBranches.map((eb, idx) => (
+                  <React.Fragment key={`elif-${idx}`}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-indigo-700 w-16 shrink-0">ELIF</span>
+                      <input type="text" placeholder="condition"
+                        value={eb.condition || ''}
+                        onChange={e => updateLcChildElifBranch(item.id, child.id, idx, 'condition', e.target.value)}
+                        className="flex-1 px-2 py-1 border border-indigo-300 rounded text-xs font-mono bg-indigo-50 focus:outline-none" />
+                      <button onClick={() => deleteLcChildElifBranch(item.id, child.id, idx)}
+                        className="p-1 text-red-400 hover:text-red-600 shrink-0"><Trash2 className="w-3 h-3"/></button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-indigo-600 w-16 shrink-0 text-right">→ value</span>
+                      <input type="text" placeholder="value for this elif branch"
+                        value={eb.expr || ''}
+                        onChange={e => updateLcChildElifBranch(item.id, child.id, idx, 'expr', e.target.value)}
+                        className="flex-1 px-2 py-1 border border-indigo-200 rounded text-xs font-mono bg-white focus:outline-none" />
+                    </div>
+                  </React.Fragment>
+                ))}
+                <div className="flex items-center gap-2">
+                  <span className="w-16 shrink-0" />
+                  <button onClick={() => addLcChildElifBranch(item.id, child.id)}
+                    className="px-2 py-0.5 text-xs font-medium text-indigo-600 border border-dashed border-indigo-300 rounded hover:bg-indigo-50">
+                    + ELIF branch
+                  </button>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-pink-700 w-16 shrink-0">ELSE →</span>
-                  <input type="text" placeholder="value when condition is false"
+                  <input type="text" placeholder="default value"
                     {...makeBind(`lcif-${child.id}-else`, 'root-input', () => child.elseExpr || '', v => updateLcChild(item.id, child.id, 'elseExpr', v), true)}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-else` ? 'border-green-400 bg-green-50' : 'border-pink-200 bg-pink-50'}`} />
                 </div>
@@ -1512,15 +1759,13 @@ const GrizzlyMappingTool = () => {
         const lcMode = item.lcMode || 'dynamic';
         const lcExpanded = expandedBlocks.has(item.id + '_lc');
 
-        const LC_FUNCS = [
-          {name:'now',       label:'now()',                args:false},
-          {name:'formatDate',label:'formatDate(date,fmt)', args:true, ph:'now(), "yyyy-MM-dd HH:mm:ss"'},
-          {name:'today',     label:'today()',              args:false},
-          {name:'uuid',      label:'uuid()',               args:false},
-          {name:'upper',     label:'upper(text)',          args:true, ph:'item?.field'},
-          {name:'lower',     label:'lower(text)',          args:true, ph:'item?.field'},
-          {name:'concat',    label:'concat(a,b)',          args:true, ph:'item?.a, item?.b'},
-        ];
+        const LC_FUNCS = allFunctions.map(f => ({
+          name: f.name,
+          label: f.args ? `${f.name}(${f.argsPlaceholder || '…'})` : `${f.name}()`,
+          args: f.args,
+          ph: f.argsPlaceholder || '',
+          builtin: f.builtin,
+        }));
         // valTypes / valColors derived from shared VALUE_TYPE_CONFIG
         const valTypes  = Object.fromEntries(Object.entries(VALUE_TYPE_CONFIG).map(([k,v]) => [k, v.label]));
         const valColors = Object.fromEntries(Object.entries(VALUE_TYPE_CONFIG).map(([k,v]) => [k, v.activeClass]));
@@ -1570,7 +1815,8 @@ const GrizzlyMappingTool = () => {
                 {et==='function' && (
                   <div className="flex gap-1 flex-1 min-w-0">
                     <select value={field.funcName||'now'} onChange={e=>sync('function',{funcName:e.target.value,funcArgs:field.funcArgs||'',staticValue:''})} className="px-1.5 py-1 border border-orange-300 rounded text-xs bg-orange-50 focus:outline-none shrink-0">
-                      {LC_FUNCS.map(f=><option key={f.name} value={f.name}>{f.label}</option>)}
+                      <optgroup label="Built-in">{LC_FUNCS.filter(f=>f.builtin).map(f=><option key={f.name} value={f.name}>{f.name}()</option>)}</optgroup>
+                      {LC_FUNCS.filter(f=>!f.builtin).length>0 && <optgroup label="Registered">{LC_FUNCS.filter(f=>!f.builtin).map(f=><option key={f.name} value={f.name}>{f.name}()</option>)}</optgroup>}
                     </select>
                     {selFn.args && <input type="text" placeholder={selFn.ph||'args…'} value={field.funcArgs||''} onChange={e=>sync('function',{funcName:field.funcName||'now',funcArgs:e.target.value,staticValue:''})} className="flex-1 min-w-0 px-2 py-1 border border-orange-200 rounded text-xs font-mono bg-white focus:outline-none"/>}
                   </div>
@@ -1763,16 +2009,7 @@ const GrizzlyMappingTool = () => {
         updateItemFields(item.id, upd);
       };
 
-      const BUILTIN_FUNCTIONS = [
-        { name: 'now', label: 'now()', desc: 'Current datetime', args: false },
-        { name: 'formatDate', label: 'formatDate(date, fmt)', desc: 'Format a date', args: true, argsPlaceholder: 'now(), "yyyy-MM-dd HH:mm:ss"' },
-        { name: 'today', label: 'today()', desc: "Today's date", args: false },
-        { name: 'uuid', label: 'uuid()', desc: 'Generate a UUID', args: false },
-        { name: 'upper', label: 'upper(text)', desc: 'Uppercase string', args: true, argsPlaceholder: 'input.field' },
-        { name: 'lower', label: 'lower(text)', desc: 'Lowercase string', args: true, argsPlaceholder: 'input.field' },
-        { name: 'concat', label: 'concat(a, b)', desc: 'Concatenate strings', args: true, argsPlaceholder: 'input.a, input.b' },
-        { name: 'coalesce', label: 'coalesce(a, b)', desc: 'First non-null value', args: true, argsPlaceholder: 'input.field, "default"' },
-      ];
+      const BUILTIN_FUNCTIONS = allFunctions;
 
       const typeConfig = VALUE_TYPE_CONFIG;
 
@@ -1809,12 +2046,21 @@ const GrizzlyMappingTool = () => {
         }
         if (exprType === 'function') {
           const selFn = BUILTIN_FUNCTIONS.find(f => f.name === (item.funcName || 'now')) || BUILTIN_FUNCTIONS[0];
+          const builtins = BUILTIN_FUNCTIONS.filter(f => f.builtin);
+          const customs  = BUILTIN_FUNCTIONS.filter(f => !f.builtin);
           return (
             <div className="flex-1 flex gap-2 min-w-0">
               <select value={item.funcName || 'now'}
                 onChange={e => syncExpr('function', { funcName: e.target.value, funcArgs: item.funcArgs || '', staticValue: item.staticValue || '' })}
                 className="px-2 py-2 border border-orange-300 rounded text-sm bg-orange-50 focus:outline-none shrink-0">
-                {BUILTIN_FUNCTIONS.map(f => <option key={f.name} value={f.name}>{f.label}</option>)}
+                <optgroup label="Built-in">
+                  {builtins.map(f => <option key={f.id} value={f.name}>{f.name}()</option>)}
+                </optgroup>
+                {customs.length > 0 && (
+                  <optgroup label="Registered helpers">
+                    {customs.map(f => <option key={f.id} value={f.name}>{f.name}()</option>)}
+                  </optgroup>
+                )}
               </select>
               {selFn.args && (
                 <input type="text" placeholder={selFn.argsPlaceholder || 'arguments…'}
@@ -2117,7 +2363,9 @@ const GrizzlyMappingTool = () => {
     const addSafeNav = (expr) => {
       if (!expr) return expr;
       // Replace every bare '.' that is NOT already preceded by '?' with '?.'
-      // Skip dots inside string literals (single or double quoted)
+      // Skip dots inside string literals (single or double quoted).
+      // Also skip '[' that is an array slice (followed by digit, ':', or '-') — these
+      // are Python slices like [0:2] or [2:] and must never become ?.[...].
       let result = '';
       let inSingle = false, inDouble = false;
       for (let i = 0; i < expr.length; i++) {
@@ -2133,12 +2381,23 @@ const GrizzlyMappingTool = () => {
       return result;
     };
 
+    // Strip any spurious ?. that ended up immediately before a Python slice bracket.
+    // e.g.  expr?.[0:2]  →  expr[0:2]   (slice, not property access)
+    // A slice bracket is [ followed by: digit, ':', or '-'
+    const stripSliceSafeNav = (expr) => {
+      if (!expr) return expr;
+      return expr.replace(/\?\.\[(?=[\d:\-])/g, '[');
+    };
+
     const cleanExpr = (expr) => {
       if (!expr) return '""';
       // 1. Replace input. prefix with INPUT?.
       let e = expr.replace(/\binput\./gi, 'INPUT?.');
       // 2. Ensure all remaining dot-navigations are safe ?.
       e = addSafeNav(e);
+      // 3. Remove any ?. that was accidentally inserted before a Python slice bracket.
+      //    e.g.  foo?.[0:2]  →  foo[0:2]
+      e = stripSliceSafeNav(e);
       return e;
     };
 
@@ -2269,8 +2528,7 @@ const GrizzlyMappingTool = () => {
           const expr = rewriteForExpr(cleanExpr(item.expression || '""'), iterator, iterable);
           results.push({ cleanedTarget: cleaned, expression: expr, isRelative: false });
         } else if (item.type === 'if' && item.lcTarget) {
-          // LC-IF ternary: lcTarget is already a relative path (no rootKey prefix)
-          const cleaned = item.lcTarget.trim();  // use as-is, no cleanPath stripping
+          const cleaned = item.lcTarget.trim();
           const cond = rewriteForExpr(cleanExpr(item.condition || 'False'), iterator, iterable);
           const ifVal = item.ifExpr
             ? rewriteForExpr(cleanExpr(item.ifExpr), iterator, iterable)
@@ -2278,11 +2536,16 @@ const GrizzlyMappingTool = () => {
           const elseVal = item.elseExpr
             ? rewriteForExpr(cleanExpr(item.elseExpr), iterator, iterable)
             : '""';
-          results.push({
-            cleanedTarget: cleaned,
-            expression: `(\n    ${ifVal}\n    if (${cond})\n    else ${elseVal}\n)`,
-            isRelative: true
-          });
+          let expr = `(\n                            ${ifVal}\n                            if (${cond})`;
+          if (item.elifBranches && item.elifBranches.length > 0) {
+            item.elifBranches.forEach(eb => {
+              const ebCond = rewriteForExpr(cleanExpr(eb.condition || 'False'), iterator, iterable);
+              const ebVal = eb.expr ? rewriteForExpr(cleanExpr(eb.expr), iterator, iterable) : '""';
+              expr += `\n                            else ${ebVal}\n                            if (${ebCond})`;
+            });
+          }
+          expr += `\n                            else ${elseVal})`;
+          results.push({ cleanedTarget: cleaned, expression: expr, isRelative: true });
         }
       });
       return results;
@@ -2695,6 +2958,18 @@ const GrizzlyMappingTool = () => {
     lines.push('# GRIZZLY_TEMPLATE_V1');
     lines.push('');
 
+    // Emit custom registered function bodies before the generated mapXxx functions
+    const customFns = registeredFunctions.filter(f => !f.builtin && f.body && f.body.trim());
+    if (customFns.length > 0) {
+      lines.push('# ── Helper functions (registered via Grizzly) ──────────────────────────────');
+      lines.push('');
+      customFns.forEach(fn => {
+        fn.body.trim().split('\n').forEach(l => lines.push(l));
+        lines.push('');
+        lines.push('');
+      });
+    }
+
     modules.filter(m => m.name !== 'main' && m.mappings.length > 0).forEach(mod => {
       const funcName = `map${toCamelFuncName(mod.name)}`;
       const docTitle = `Map ${toDocTitle(mod.name)}`;
@@ -2856,10 +3131,7 @@ const GrizzlyMappingTool = () => {
               className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-gray-400 text-sm"
             />
             {outputSearchTerm && (
-              <button
-                onClick={() => setOutputSearchTerm('')}
-                className="absolute right-2 top-2.5 text-gray-400 hover:text-gray-600"
-              >
+              <button onClick={() => setOutputSearchTerm('')} className="absolute right-2 top-2.5 text-gray-400 hover:text-gray-600">
                 <X className="w-4 h-4" />
               </button>
             )}
@@ -2877,57 +3149,214 @@ const GrizzlyMappingTool = () => {
       <div className="flex-1 overflow-y-auto p-6 min-w-0">
         <div className="max-w-5xl mx-auto">
           <div className="bg-white rounded-xl shadow-lg p-6">
-            {/* Compact module strip: one row, no extra column */}
-            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-200">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Module</span>
-              <div className="flex flex-wrap items-center gap-1">
-                {modules.map((mod, idx) => (
-                  <div key={mod.id} className="flex items-center gap-1">
-                    {renamingModuleIdx === idx ? (
-                      <input
-                        autoFocus
-                        type="text"
-                        value={renameValue}
-                        onChange={e => setRenameValue(e.target.value)}
-                        onBlur={() => { if (renameValue.trim()) updateModuleName(idx, renameValue.trim()); setRenamingModuleIdx(null); }}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') { if (renameValue.trim()) updateModuleName(idx, renameValue.trim()); setRenamingModuleIdx(null); }
-                          if (e.key === 'Escape') setRenamingModuleIdx(null);
-                        }}
-                        className="px-2 py-0.5 rounded text-xs font-medium border border-slate-400 bg-white w-28 focus:outline-none"
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setActiveModule(idx)}
-                        onDoubleClick={() => { if (mod.name !== 'main') { setRenamingModuleIdx(idx); setRenameValue(mod.name); } }}
-                        title={mod.name !== 'main' ? 'Double-click to rename' : undefined}
-                        className={`px-2.5 py-1 rounded text-xs font-medium ${activeModule === idx ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                      >
-                        {mod.name === 'main' ? 'main' : mod.name}
-                      </button>
-                    )}
-                    {modules.length > 1 && mod.name !== 'main' && renamingModuleIdx !== idx && (
-                      <button type="button" onClick={() => deleteModule(idx)} className="p-0.5 text-slate-400 hover:text-red-600"><X className="w-3 h-3" /></button>
-                    )}
-                  </div>
-                ))}
-                <button type="button" onClick={addModule} className="px-2.5 py-1 rounded text-xs font-medium text-slate-600 border border-dashed border-slate-300 hover:bg-slate-50">
-                  + Module
+            {/* Module strip: ƒ [fn…] [+ ƒ]  ·  [mod…] [main] [+ Module] */}
+            <div className="flex items-center gap-1.5 mb-4 pb-3 border-b border-slate-200 flex-wrap">
+
+              {/* ── Functions ── */}
+              <button
+                type="button"
+                onClick={() => { setShowFnSheet(true); setRegFnForm(null); }}
+                className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${showFnSheet ? 'bg-orange-100 border-orange-400 text-orange-800' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}
+                title="Browse & register functions">
+                ƒ Fn
+              </button>
+
+              {/* divider */}
+              <span className="w-px h-5 bg-slate-200 mx-1 shrink-0" />
+
+              {/* ── Map modules ── */}
+              {modules.map((mod, idx) => (
+                <div key={mod.id} className="flex items-center gap-1">
+                  {renamingModuleIdx === idx ? (
+                    <input
+                      autoFocus
+                      type="text"
+                      value={renameValue}
+                      onChange={e => setRenameValue(e.target.value)}
+                      onBlur={() => { if (renameValue.trim()) updateModuleName(idx, renameValue.trim()); setRenamingModuleIdx(null); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { if (renameValue.trim()) updateModuleName(idx, renameValue.trim()); setRenamingModuleIdx(null); }
+                        if (e.key === 'Escape') setRenamingModuleIdx(null);
+                      }}
+                      className="px-2 py-0.5 rounded text-xs font-medium border border-slate-400 bg-white w-28 focus:outline-none"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => { setActiveModule(idx); setShowFnSheet(false); setRegFnForm(null); }}
+                      onDoubleClick={() => { if (mod.name !== 'main') { setRenamingModuleIdx(idx); setRenameValue(mod.name); } }}
+                      title={mod.name !== 'main' ? 'Double-click to rename' : undefined}
+                      className={`px-2.5 py-1 rounded text-xs font-medium ${activeModule === idx && !showFnSheet ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    >
+                      {mod.name === 'main' ? 'main' : mod.name}
+                    </button>
+                  )}
+                  {modules.length > 1 && mod.name !== 'main' && renamingModuleIdx !== idx && (
+                    <button type="button" onClick={() => deleteModule(idx)} className="p-0.5 text-slate-400 hover:text-red-600"><X className="w-3 h-3" /></button>
+                  )}
+                </div>
+              ))}
+              <button type="button" onClick={addModule} className="px-2.5 py-1 rounded text-xs font-medium text-slate-600 border border-dashed border-slate-300 hover:bg-slate-50">
+                + Module
+              </button>
+            </div>
+
+            <div className="flex justify-between items-center mb-4">
+              {showFnSheet
+                ? <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2"><span className="font-mono text-orange-500">ƒ</span> Functions</h1>
+                : <h1 className="text-xl font-bold text-gray-900">Mapping Builder</h1>
+              }
+              <div className="flex items-center gap-2">
+                {showFnSheet && (
+                  <button onClick={() => { setShowFnSheet(false); setRegFnForm(null); }}
+                    className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-sm text-slate-600 hover:bg-slate-50">
+                    <X className="w-4 h-4" /> Close
+                  </button>
+                )}
+                <button onClick={() => setStep(3)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
+                  <Layers className="w-4 h-4" /> Review changes
                 </button>
               </div>
             </div>
 
-            <div className="flex justify-between items-center mb-4">
-              <h1 className="text-xl font-bold text-gray-900">Mapping Builder</h1>
-              <button
-                onClick={() => setStep(3)}
-                className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm"
-              >
-                <Layers className="w-4 h-4" /> Review changes
-              </button>
-            </div>
+            {/* ── FUNCTION VIEW ── */}
+            {showFnSheet && (
+              <div className="space-y-6">
 
+                {/* Built-in */}
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Built-in</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {allFunctions.filter(f => f.builtin).map(fn => (
+                      <div key={fn.id} className="flex flex-col gap-0.5 px-3 py-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                        <span className="font-mono text-xs font-semibold text-orange-600">{fn.name}({fn.argsPlaceholder || ''})</span>
+                        <span className="text-xs text-slate-500">{fn.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Registered */}
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Registered</p>
+                  {allFunctions.filter(f => !f.builtin).length === 0 ? (
+                    <p className="text-xs text-slate-400 italic">No custom functions yet — register one below.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {allFunctions.filter(f => !f.builtin).map(fn => {
+                        const isOpen = regFnExpanded.has(fn.id);
+                        return (
+                          <div key={fn.id} className="border border-violet-200 rounded-lg overflow-hidden">
+                            <div className="flex items-center gap-3 px-3 py-2.5 bg-violet-50 cursor-pointer select-none" onClick={() => toggleRegFnExpand(fn.id)}>
+                              <div className="flex-1 min-w-0">
+                                <span className="font-mono text-xs font-semibold text-violet-700">{fn.name}({fn.argsPlaceholder || ''})</span>
+                                <span className="ml-2 text-xs text-slate-500">{fn.desc}</span>
+                              </div>
+                              <button onClick={e => { e.stopPropagation(); deleteRegFn(fn.id); }} className="p-1 text-red-300 hover:text-red-500 shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
+                              {isOpen ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
+                            </div>
+                            {isOpen && fn.body && (
+                              <pre className="text-xs font-mono text-slate-600 bg-white px-4 py-3 overflow-x-auto whitespace-pre leading-relaxed border-t border-violet-100">{fn.body}</pre>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Register new */}
+                <div className="border-t border-slate-100 pt-5">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Register new function</p>
+                  {regFnForm === null ? (
+                    <button onClick={() => setRegFnForm({ desc: '', body: '', aiLoading: false, aiError: '' })}
+                      className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-orange-300 rounded-xl text-sm text-orange-600 hover:bg-orange-50 font-medium transition-colors">
+                      <Plus className="w-4 h-4" /> Register a function
+                    </button>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* ── Step 1: Description ── */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">What does it do? <span className="text-slate-400 font-normal">(describe your function)</span></label>
+                        <div className="flex gap-2">
+                          <input
+                            autoFocus
+                            type="text"
+                            value={regFnForm.desc}
+                            onChange={e => setRegFnForm(f => ({...f, desc: e.target.value}))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && regFnForm.desc.trim() && !regFnForm.aiLoading) {
+                                setRegFnForm(f => ({...f, aiLoading: true, aiError: ''}));
+                                callAiApi(regFnForm.desc.trim())
+                                  .then(code => setRegFnForm(f => ({...f, body: code, aiLoading: false})))
+                                  .catch(() => setRegFnForm(f => ({...f, aiLoading: false, aiError: 'AI generation failed. Write it manually below.'})));
+                              }
+                            }}
+                            placeholder="e.g. Builds address text from format type"
+                            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-orange-400"
+                          />
+                          <button
+                            onClick={() => {
+                              if (!regFnForm.desc.trim() || regFnForm.aiLoading) return;
+                              setRegFnForm(f => ({...f, aiLoading: true, aiError: ''}));
+                              callAiApi(regFnForm.desc.trim())
+                                .then(code => setRegFnForm(f => ({...f, body: code, aiLoading: false})))
+                                .catch(() => setRegFnForm(f => ({...f, aiLoading: false, aiError: 'AI generation failed. Write it manually below.'})));
+                            }}
+                            disabled={!regFnForm.desc.trim() || regFnForm.aiLoading}
+                            className="px-3 py-2 bg-orange-500 text-white rounded-lg text-xs font-medium hover:bg-orange-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0 transition-colors"
+                            title="Generate function with AI (or press Enter)">
+                            {regFnForm.aiLoading
+                              ? <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="8"/></svg>
+                              : <span>✦</span>
+                            }
+                            {regFnForm.aiLoading ? 'Writing…' : 'AI Write'}
+                          </button>
+                        </div>
+                        {regFnForm.aiError && <p className="text-xs text-red-500 mt-1">{regFnForm.aiError}</p>}
+                      </div>
+
+                      {/* ── Step 2: Function body ── */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">Function body <span className="text-red-400">*</span></label>
+                        <textarea
+                          value={regFnForm.body}
+                          onChange={e => setRegFnForm(f => ({...f, body: e.target.value}))}
+                          placeholder={`def my_helper(value):\n    # your logic here\n    return value`}
+                          rows={8}
+                          spellCheck={false}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono focus:outline-none focus:border-orange-400 bg-slate-50 resize-none leading-relaxed"
+                        />
+                        {(() => {
+                          const { name, params } = parseDefLine(regFnForm.body);
+                          if (!regFnForm.body.trim()) return null;
+                          if (!name) return <p className="text-xs text-amber-600 mt-1">⚠ No <code className="bg-amber-50 px-0.5 rounded">def name(...):</code> found</p>;
+                          return (
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              <span className="text-xs text-slate-400">Detected:</span>
+                              <span className="font-mono text-xs px-2 py-0.5 bg-green-50 border border-green-200 text-green-700 rounded-full">{name}()</span>
+                              {params.map(p => <span key={p.id} className="font-mono text-xs px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded-full">{p.name}</span>)}
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button onClick={() => setRegFnForm(null)} className="flex-1 py-2 border border-slate-200 rounded-lg text-sm text-slate-500 hover:bg-slate-50">Cancel</button>
+                        <button onClick={saveRegFn} disabled={!parseDefLine(regFnForm.body).name}
+                          className="flex-1 py-2 bg-slate-700 text-white rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed">
+                          Register function
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── MAPPING BUILDER ── */}
+            {!showFnSheet && (
+              <>
             <p className="mb-4 text-xs text-slate-500">Drag or double-click from trees; or type with autocomplete.</p>
 
             <div className="space-y-3">
@@ -3005,6 +3434,7 @@ const GrizzlyMappingTool = () => {
               </button>
 
             </div>
+            </>)}
           </div>
         </div>
       </div>
@@ -3084,6 +3514,7 @@ const GrizzlyMappingTool = () => {
           </div>
         </div>
       )}
+
     </div>
   );
 };
