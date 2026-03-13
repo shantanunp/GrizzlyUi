@@ -3,6 +3,52 @@ import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Fold
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
+// ── Prism-based syntax highlighter ───────────────────────────────────────────
+// Uses prism-react-renderer. Theme is VS Dark — change themes.vsDark to any
+// other export from 'prism-react-renderer' e.g. themes.github, themes.dracula
+import { Highlight, themes as prismThemes } from 'prism-react-renderer';
+
+//  Dark (current)
+// <Highlight theme={prismThemes.vsDark} ...>
+
+//  Light options — swap vsDark for any of these:
+// <Highlight theme={prismThemes.github} ...>       // ← most popular light theme
+// <Highlight theme={prismThemes.vsLight} ...>      // VS Code light
+// <Highlight theme={prismThemes.nightOwlLight} ... // Night Owl light variant
+// <Highlight theme={prismThemes.duotoneLight} ...> // Minimal duotone
+const PrismCode = ({ code, language = 'python' }) => (
+  <Highlight theme={prismThemes.github} code={(code || '').trimEnd()} language={language}>
+    {({ className, style, tokens, getLineProps, getTokenProps }) => (
+      <pre
+        className={className}
+        style={{
+          ...style,
+          margin: 0,
+          padding: '12px 16px',
+          fontSize: '12px',
+          lineHeight: '1.6',
+          overflowX: 'auto',
+          borderRadius: '0',
+        }}
+      >
+        {tokens.map((line, i) => (
+          <div key={i} {...getLineProps({ line })} style={{ display: 'table-row' }}>
+            <span style={{ display: 'table-cell', paddingRight: '16px', userSelect: 'none', opacity: 0.35, textAlign: 'right', minWidth: '28px', fontSize: '11px' }}>
+              {i + 1}
+            </span>
+            <span style={{ display: 'table-cell' }}>
+              {line.map((token, key) => (
+                <span key={key} {...getTokenProps({ token })} />
+              ))}
+            </span>
+          </div>
+        ))}
+      </pre>
+    )}
+  </Highlight>
+);
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Shared value-type config (used in both plain assignment and for-loop/static-list field rows) ──
 const VALUE_TYPE_CONFIG = {
   input:    { label: '⬅ Input',  activeClass: 'border-green-300  bg-green-50   text-green-700'  },
@@ -3256,7 +3302,9 @@ const GrizzlyMappingTool = () => {
                               {isOpen ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
                             </div>
                             {isOpen && fn.body && (
-                              <pre className="text-xs font-mono text-slate-600 bg-white px-4 py-3 overflow-x-auto whitespace-pre leading-relaxed border-t border-violet-100">{fn.body}</pre>
+                              <div className="border-t border-violet-100 overflow-hidden">
+                                <PrismCode code={fn.body} language="python" />
+                              </div>
                             )}
                           </div>
                         );
@@ -3493,7 +3541,9 @@ const GrizzlyMappingTool = () => {
       {step === 3 && (
         <div className="max-w-4xl mx-auto p-6">
           <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Export</h1>
-          <pre className="bg-slate-100 p-4 rounded-lg text-xs overflow-auto max-h-96 mb-4 font-mono whitespace-pre">{generateCode()}</pre>
+          <div className="rounded-lg overflow-hidden border border-slate-700 mb-4 max-h-[500px] overflow-y-auto">
+            <PrismCode code={generateCode()} language="python" />
+          </div>
           <div className="flex gap-4">
             <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
               <ArrowLeft className="w-4 h-4" /> Back to mapping
