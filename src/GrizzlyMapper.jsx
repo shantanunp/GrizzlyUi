@@ -128,11 +128,39 @@ const parseTemplate = (pythonCode) => {
     return { exprType: 'input', expression: normalized, staticValue: '', funcName: 'now', funcArgs: '' };
   };
 
-  // Detect multi-line ternary: ( ifVal \n if (cond) \n else elseVal )
+  // Detect (chained) ternary: ( val1 if (cond1) else val2 if (cond2) … else default )
   const parseTernary = (text) => {
-    const m = text.match(/\(\s*([\s\S]+?)\s+if\s+\(([\s\S]+?)\)\s+else\s+([\s\S]+?)\s*\)/s);
-    if (m) return { condition: m[2].trim(), ifExpr: m[1].trim(), elseExpr: m[3].trim() };
-    return null;
+    text = text.trim();
+    if (!text.startsWith('(') || !text.endsWith(')')) return null;
+    let inner = text.slice(1, -1).trim();
+
+    const branches = [];
+    while (inner.length > 0) {
+      const m = inner.match(/^([\s\S]+?)\s+if\s+\(/);
+      if (!m) break;
+      const value = m[1].trim();
+      if (!value) break;
+      const afterParen = inner.slice(m[0].length);
+      let depth = 1, condEnd = -1;
+      for (let i = 0; i < afterParen.length; i++) {
+        if (afterParen[i] === '(') depth++;
+        if (afterParen[i] === ')') { depth--; if (depth === 0) { condEnd = i; break; } }
+      }
+      if (condEnd === -1) break;
+      branches.push({ expr: value, condition: afterParen.slice(0, condEnd).trim() });
+      inner = afterParen.slice(condEnd + 1).trim();
+      const em = inner.match(/^else\b\s*/);
+      if (em) { inner = inner.slice(em[0].length); } else { inner = ''; break; }
+    }
+
+    if (branches.length === 0) return null;
+    const elseExpr = inner.trim() || 'None';
+    return {
+      condition: branches[0].condition,
+      ifExpr: branches[0].expr,
+      elifBranches: branches.slice(1).map(b => ({ condition: b.condition, expr: b.expr })),
+      elseExpr,
+    };
   };
 
   // Split text at top-level commas
@@ -156,7 +184,7 @@ const parseTemplate = (pythonCode) => {
     const entries = splitTopLevel(dictText);
     for (const entry of entries) {
       if (!entry) continue;
-      const km = entry.match(/^"([^"]+)"\s*:\s*([\s\S]+)$/s);
+      const km = entry.match(/^"{1,2}([^"]+)"{1,2}\s*:\s*([\s\S]+)$/s);
       if (!km) continue;
       const key = km[1];
       const val = km[2].trim();
@@ -166,7 +194,7 @@ const parseTemplate = (pythonCode) => {
       } else {
         const ternary = parseTernary(val);
         if (ternary) {
-          fields.push({ id: uid(), path: fullPath, isTernary: true, ...ternary });
+          fields.push({ id: uid(), path: fullPath, isTernary: true, ...ternary, elifBranches: ternary.elifBranches || [] });
         } else {
           fields.push({ id: uid(), path: fullPath, isTernary: false, ...parseScalar(val) });
         }
@@ -216,7 +244,7 @@ const parseTemplate = (pythonCode) => {
         const childFields = flattenDict(dictPart);
         const lcChildren = childFields.map(f => {
           if (f.isTernary) {
-            return { id: uid(), type: 'if', lcTarget: f.path, condition: f.condition, ifExpr: f.ifExpr, elseExpr: f.elseExpr };
+            return { id: uid(), type: 'if', lcTarget: f.path, condition: f.condition, ifExpr: f.ifExpr, elifBranches: f.elifBranches || [], elseExpr: f.elseExpr };
           }
           return { id: uid(), type: 'assignment', target: f.path, expression: f.expression, exprType: f.exprType, staticValue: f.staticValue || '', funcName: f.funcName || 'now', funcArgs: f.funcArgs || '' };
         });
@@ -424,12 +452,6 @@ const GrizzlyMappingTool = () => {
   const BUILTIN_REG_FUNCTIONS = [
     { id: 'rf_now',        name: 'now',        desc: 'Current date and time',               args: false, builtin: true },
     { id: 'rf_formatDate', name: 'formatDate', desc: 'Format a date value',                 args: true,  builtin: true, argsPlaceholder: 'now(), "yyyy-MM-dd HH:mm:ss"' },
-    { id: 'rf_today',      name: 'today',      desc: "Today's date (no time)",               args: false, builtin: true },
-    { id: 'rf_uuid',       name: 'uuid',       desc: 'Generate a unique ID',                 args: false, builtin: true },
-    { id: 'rf_upper',      name: 'upper',      desc: 'Convert text to uppercase',            args: true,  builtin: true, argsPlaceholder: 'input.field' },
-    { id: 'rf_lower',      name: 'lower',      desc: 'Convert text to lowercase',            args: true,  builtin: true, argsPlaceholder: 'input.field' },
-    { id: 'rf_concat',     name: 'concat',     desc: 'Join two text values together',        args: true,  builtin: true, argsPlaceholder: 'input.a, input.b' },
-    { id: 'rf_coalesce',   name: 'coalesce',   desc: 'Return first non-empty value',         args: true,  builtin: true, argsPlaceholder: 'input.field, "default"' },
   ];
   const [registeredFunctions, setRegisteredFunctions] = useState(BUILTIN_REG_FUNCTIONS);
   const [showRegFnPanel, setShowRegFnPanel] = useState(false);
@@ -1360,7 +1382,7 @@ const GrizzlyMappingTool = () => {
     const addLcChild = (assignmentId, type) => {
     const newChild = { id: generateId(), type };
     if (type === 'assignment') { newChild.target = ''; newChild.expression = ''; }
-    else if (type === 'if') { newChild.lcTarget = ''; newChild.condition = ''; newChild.ifExpr = ''; newChild.elseExpr = ''; }
+    else if (type === 'if') { newChild.lcTarget = ''; newChild.condition = ''; newChild.ifExpr = ''; newChild.elifBranches = []; newChild.elseExpr = ''; }
     const updateInItems = (items) => items.map(item => {
       if (item.id === assignmentId) return { ...item, lcChildren: [...(item.lcChildren || []), newChild] };
       let u = { ...item };
@@ -1390,6 +1412,58 @@ const GrizzlyMappingTool = () => {
   const deleteLcChild = (assignmentId, childId) => {
     const updateInItems = (items) => items.map(item => {
       if (item.id === assignmentId) return { ...item, lcChildren: (item.lcChildren || []).filter(c => c.id !== childId) };
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const addLcChildElifBranch = (assignmentId, childId) => {
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => {
+          if (c.id !== childId) return c;
+          return { ...c, elifBranches: [...(c.elifBranches || []), { condition: '', expr: '' }] };
+        })};
+      }
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const updateLcChildElifBranch = (assignmentId, childId, elifIdx, field, value) => {
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => {
+          if (c.id !== childId) return c;
+          const updated = (c.elifBranches || []).map((eb, i) => i === elifIdx ? { ...eb, [field]: value } : eb);
+          return { ...c, elifBranches: updated };
+        })};
+      }
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const deleteLcChildElifBranch = (assignmentId, childId, elifIdx) => {
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => {
+          if (c.id !== childId) return c;
+          return { ...c, elifBranches: (c.elifBranches || []).filter((_, i) => i !== elifIdx) };
+        })};
+      }
       let u = { ...item };
       if (u.children) u = { ...u, children: updateInItems(u.children) };
       if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
@@ -1529,18 +1603,19 @@ const GrizzlyMappingTool = () => {
       const bindExpr     = makeBind(`asgn-${item.id}-expr`,     'root-input',  () => item.expression,  v => updateItem(item.id, 'expression', v), true);
       const bindIterable = makeBind(`asgn-${item.id}-iterable`, 'root-input',  () => item.lcIterable || '', v => updateItem(item.id, 'lcIterable', v));
 
-      // Render a compact IF/ELSE ternary block inside the list comp body.
-      // Data model: child.lcTarget (output path), child.condition, child.ifExpr, child.elseExpr
+      // Render a compact IF / ELIF / ELSE ternary block inside the list comp body.
       const renderLcIf = (child) => {
         const isExp = expandedBlocks.has(child.id);
+        const elifBranches = child.elifBranches || [];
         return (
           <div key={child.id} className="my-1 border border-purple-300 rounded-lg overflow-hidden">
-            {/* Header: collapse toggle + IF/ELSE label + delete */}
             <div className="flex items-center gap-2 px-2 py-1.5 bg-purple-100">
               <button onClick={() => toggleBlock(child.id)} className="p-0.5 text-purple-600">
                 {isExp ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}
               </button>
-              <span className="font-bold text-purple-800 text-xs">IF / ELSE  ternary</span>
+              <span className="font-bold text-purple-800 text-xs">
+                {elifBranches.length > 0 ? 'IF / ELIF / ELSE  ternary' : 'IF / ELSE  ternary'}
+              </span>
               {!isExp && child.lcTarget && (
                 <span className="text-xs text-purple-500 font-mono truncate">{child.lcTarget}</span>
               )}
@@ -1548,31 +1623,55 @@ const GrizzlyMappingTool = () => {
             </div>
             {isExp && (
               <div className="p-2 space-y-1.5 bg-white">
-                {/* Output field path — relative, no prefix */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-slate-500 w-16 shrink-0">field path</span>
                   <input type="text" placeholder="e.g. field.nested.value"
                     {...makeBind(`lcif-${child.id}-target`, 'relative', () => child.lcTarget || '', v => updateLcChild(item.id, child.id, 'lcTarget', v))}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-target` ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-yellow-50'}`} />
                 </div>
-                {/* Condition — input paths */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-purple-700 w-16 shrink-0">IF</span>
-                  <input type="text" placeholder="condition  (e.g. item?.type.upper() == 'X')"
+                  <input type="text" placeholder="condition  (e.g. item?.type == 'X')"
                     {...makeBind(`lcif-${child.id}-cond`, 'root-input', () => child.condition || '', v => updateLcChild(item.id, child.id, 'condition', v))}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-cond` ? 'border-purple-500 bg-purple-100' : 'border-purple-300 bg-purple-50'}`} />
                 </div>
-                {/* IF value — input paths, append mode */}
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-purple-600 w-16 shrink-0 text-right">→ value</span>
                   <input type="text" placeholder="value when condition is true"
                     {...makeBind(`lcif-${child.id}-if`, 'root-input', () => child.ifExpr || '', v => updateLcChild(item.id, child.id, 'ifExpr', v), true)}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-if` ? 'border-green-400 bg-green-50' : 'border-purple-200 bg-white'}`} />
                 </div>
-                {/* ELSE value — input paths, append mode */}
+                {/* ELIF branches */}
+                {elifBranches.map((eb, idx) => (
+                  <React.Fragment key={`elif-${idx}`}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-indigo-700 w-16 shrink-0">ELIF</span>
+                      <input type="text" placeholder="condition"
+                        value={eb.condition || ''}
+                        onChange={e => updateLcChildElifBranch(item.id, child.id, idx, 'condition', e.target.value)}
+                        className="flex-1 px-2 py-1 border border-indigo-300 rounded text-xs font-mono bg-indigo-50 focus:outline-none" />
+                      <button onClick={() => deleteLcChildElifBranch(item.id, child.id, idx)}
+                        className="p-1 text-red-400 hover:text-red-600 shrink-0"><Trash2 className="w-3 h-3"/></button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-indigo-600 w-16 shrink-0 text-right">→ value</span>
+                      <input type="text" placeholder="value for this elif branch"
+                        value={eb.expr || ''}
+                        onChange={e => updateLcChildElifBranch(item.id, child.id, idx, 'expr', e.target.value)}
+                        className="flex-1 px-2 py-1 border border-indigo-200 rounded text-xs font-mono bg-white focus:outline-none" />
+                    </div>
+                  </React.Fragment>
+                ))}
+                <div className="flex items-center gap-2">
+                  <span className="w-16 shrink-0" />
+                  <button onClick={() => addLcChildElifBranch(item.id, child.id)}
+                    className="px-2 py-0.5 text-xs font-medium text-indigo-600 border border-dashed border-indigo-300 rounded hover:bg-indigo-50">
+                    + ELIF branch
+                  </button>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-pink-700 w-16 shrink-0">ELSE →</span>
-                  <input type="text" placeholder="value when condition is false"
+                  <input type="text" placeholder="default value"
                     {...makeBind(`lcif-${child.id}-else`, 'root-input', () => child.elseExpr || '', v => updateLcChild(item.id, child.id, 'elseExpr', v), true)}
                     className={`flex-1 px-2 py-1 border rounded text-xs font-mono focus:outline-none ${selectedInput?.key === `lcif-${child.id}-else` ? 'border-green-400 bg-green-50' : 'border-pink-200 bg-pink-50'}`} />
                 </div>
@@ -2343,8 +2442,7 @@ const GrizzlyMappingTool = () => {
           const expr = rewriteForExpr(cleanExpr(item.expression || '""'), iterator, iterable);
           results.push({ cleanedTarget: cleaned, expression: expr, isRelative: false });
         } else if (item.type === 'if' && item.lcTarget) {
-          // LC-IF ternary: lcTarget is already a relative path (no rootKey prefix)
-          const cleaned = item.lcTarget.trim();  // use as-is, no cleanPath stripping
+          const cleaned = item.lcTarget.trim();
           const cond = rewriteForExpr(cleanExpr(item.condition || 'False'), iterator, iterable);
           const ifVal = item.ifExpr
             ? rewriteForExpr(cleanExpr(item.ifExpr), iterator, iterable)
@@ -2352,11 +2450,16 @@ const GrizzlyMappingTool = () => {
           const elseVal = item.elseExpr
             ? rewriteForExpr(cleanExpr(item.elseExpr), iterator, iterable)
             : '""';
-          results.push({
-            cleanedTarget: cleaned,
-            expression: `(\n    ${ifVal}\n    if (${cond})\n    else ${elseVal}\n)`,
-            isRelative: true
-          });
+          let expr = `(\n                            ${ifVal}\n                            if (${cond})`;
+          if (item.elifBranches && item.elifBranches.length > 0) {
+            item.elifBranches.forEach(eb => {
+              const ebCond = rewriteForExpr(cleanExpr(eb.condition || 'False'), iterator, iterable);
+              const ebVal = eb.expr ? rewriteForExpr(cleanExpr(eb.expr), iterator, iterable) : '""';
+              expr += `\n                            else ${ebVal}\n                            if (${ebCond})`;
+            });
+          }
+          expr += `\n                            else ${elseVal})`;
+          results.push({ cleanedTarget: cleaned, expression: expr, isRelative: true });
         }
       });
       return results;
