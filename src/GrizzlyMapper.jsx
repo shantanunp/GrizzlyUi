@@ -3085,13 +3085,12 @@ const GrizzlyMappingTool = () => {
             <div className="flex items-center gap-1.5 mb-4 pb-3 border-b border-slate-200 flex-wrap">
 
               {/* ── Functions ── */}
-              <span className="text-xs font-semibold text-orange-400 tracking-wider shrink-0 select-none">ƒ</span>
               <button
                 type="button"
                 onClick={() => { setShowFnSheet(true); setRegFnForm(null); }}
-                className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${showFnSheet ? 'bg-orange-100 border-orange-400 text-orange-800' : 'text-orange-500 border-dashed border-orange-300 hover:bg-orange-50'}`}
+                className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${showFnSheet ? 'bg-orange-100 border-orange-400 text-orange-800' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}
                 title="Browse & register functions">
-                + ƒ
+                ƒ Fn
               </button>
 
               {/* divider */}
@@ -3119,7 +3118,7 @@ const GrizzlyMappingTool = () => {
                       onClick={() => { setActiveModule(idx); setShowFnSheet(false); setRegFnForm(null); }}
                       onDoubleClick={() => { if (mod.name !== 'main') { setRenamingModuleIdx(idx); setRenameValue(mod.name); } }}
                       title={mod.name !== 'main' ? 'Double-click to rename' : undefined}
-                      className={`px-2.5 py-1 rounded text-xs font-medium ${activeModule === idx ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      className={`px-2.5 py-1 rounded text-xs font-medium ${activeModule === idx && !showFnSheet ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
                     >
                       {mod.name === 'main' ? 'main' : mod.name}
                     </button>
