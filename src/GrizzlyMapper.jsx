@@ -124,7 +124,9 @@ const parseTemplate = (pythonCode) => {
       const args = (fnMatch[2] || '').trim();
       return { exprType: 'function', funcName: name, funcArgs: args, expression: raw, staticValue: '' };
     }
-    const normalized = raw.replace(/^INPUT\??\./i, 'input.');
+    const normalized = raw
+      .replace(/^INPUT\??\./i, 'input.')           // leading INPUT?. prefix
+      .replace(/\bINPUT\??\.(?=\w)/gi, 'input.');  // INPUT?. anywhere else in expr
     return { exprType: 'input', expression: normalized, staticValue: '', funcName: 'now', funcArgs: '' };
   };
 
@@ -342,7 +344,10 @@ const parseTemplate = (pythonCode) => {
       currentModule.mappings.push({
         id: uid(), type: 'variable',
         varName: varMatch[1],
-        expression: (varMatch[2] || '').replace(/^INPUT\??\./i, 'input.').trim()
+        expression: (varMatch[2] || '')
+          .replace(/^INPUT\??\./i, 'input.')
+          .replace(/\bINPUT\??\.(?=\w)/gi, 'input.')
+          .trim()
       });
       i++; continue;
     }
@@ -2290,7 +2295,9 @@ const GrizzlyMappingTool = () => {
     const addSafeNav = (expr) => {
       if (!expr) return expr;
       // Replace every bare '.' that is NOT already preceded by '?' with '?.'
-      // Skip dots inside string literals (single or double quoted)
+      // Skip dots inside string literals (single or double quoted).
+      // Also skip '[' that is an array slice (followed by digit, ':', or '-') — these
+      // are Python slices like [0:2] or [2:] and must never become ?.[...].
       let result = '';
       let inSingle = false, inDouble = false;
       for (let i = 0; i < expr.length; i++) {
@@ -2306,12 +2313,23 @@ const GrizzlyMappingTool = () => {
       return result;
     };
 
+    // Strip any spurious ?. that ended up immediately before a Python slice bracket.
+    // e.g.  expr?.[0:2]  →  expr[0:2]   (slice, not property access)
+    // A slice bracket is [ followed by: digit, ':', or '-'
+    const stripSliceSafeNav = (expr) => {
+      if (!expr) return expr;
+      return expr.replace(/\?\.\[(?=[\d:\-])/g, '[');
+    };
+
     const cleanExpr = (expr) => {
       if (!expr) return '""';
       // 1. Replace input. prefix with INPUT?.
       let e = expr.replace(/\binput\./gi, 'INPUT?.');
       // 2. Ensure all remaining dot-navigations are safe ?.
       e = addSafeNav(e);
+      // 3. Remove any ?. that was accidentally inserted before a Python slice bracket.
+      //    e.g.  foo?.[0:2]  →  foo[0:2]
+      e = stripSliceSafeNav(e);
       return e;
     };
 
