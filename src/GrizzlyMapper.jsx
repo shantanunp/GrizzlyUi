@@ -486,48 +486,9 @@ const getAllExpandedIds = (inputSchema, outputSchema) => {
   return new Set(['input', 'output', ...inputIds, ...outputIds]);
 };
 
-// ── AI Provider Config ────────────────────────────────────────────────────────
-// Swap provider here without touching any other code.
-// Each provider needs: url, headers, buildBody(prompt), extractText(responseJson)
-const AI_PROVIDER_CONFIG = {
-
-  // ── Anthropic (Claude) ───────────────────────────────────────────────────
-  anthropic: {
-    url: 'https://api.anthropic.com/v1/messages',
-    headers: { 'Content-Type': 'application/json' },
-    buildBody: (prompt) => JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-    extractText: (data) =>
-      (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim(),
-  },
-
-  // ── OpenAI (GPT) ─────────────────────────────────────────────────────────
-  // openai: {
-  //   url: 'https://api.openai.com/v1/chat/completions',
-  //   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer YOUR_KEY' },
-  //   buildBody: (prompt) => JSON.stringify({
-  //     model: 'gpt-4o',
-  //     messages: [{ role: 'user', content: prompt }],
-  //   }),
-  //   extractText: (data) => data.choices?.[0]?.message?.content?.trim() ?? '',
-  // },
-
-  // ── Google Gemini ────────────────────────────────────────────────────────
-  // gemini: {
-  //   url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=YOUR_KEY',
-  //   headers: { 'Content-Type': 'application/json' },
-  //   buildBody: (prompt) => JSON.stringify({
-  //     contents: [{ parts: [{ text: prompt }] }],
-  //   }),
-  //   extractText: (data) =>
-  //     data.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() ?? '',
-  // },
-};
-
-// Change this one line to switch provider: 'anthropic' | 'openai' | 'gemini'
+// ── AI Provider ─────────────────────────────────────────────────────────────
+// Handled by Vite dev server. Add API key to .env. Change provider below.
+// Switch: 'anthropic' | 'openai' | 'gemini'
 const ACTIVE_AI_PROVIDER = 'anthropic';
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -558,9 +519,7 @@ const GrizzlyMappingTool = () => {
   const allFunctions = registeredFunctions; // single source of truth
 
   // ── Generic AI function writer ───────────────────────────────────────────
-  // Uses ACTIVE_AI_PROVIDER + AI_PROVIDER_CONFIG — swap provider at the top of the file.
   const callAiApi = (description) => {
-    const provider = AI_PROVIDER_CONFIG[ACTIVE_AI_PROVIDER];
     const prompt =
       `Write a Python helper function for a data transformation pipeline.\n` +
       `Description: "${description}"\n\n` +
@@ -570,13 +529,16 @@ const GrizzlyMappingTool = () => {
       `- Add a one-line docstring\n` +
       `- Keep it concise and practical\n` +
       `- Return only the raw Python code, no markdown, no explanation`;
-    return fetch(provider.url, {
+    return fetch('/api/ai/generate', {
       method: 'POST',
-      headers: provider.headers,
-      body: provider.buildBody(prompt),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: ACTIVE_AI_PROVIDER, prompt }),
     })
-      .then(r => r.json())
-      .then(data => provider.extractText(data));
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) throw new Error(data.error);
+        return data.text || '';
+      });
   };
   // ────────────────────────────────────────────────────────────────────────
 

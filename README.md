@@ -77,3 +77,7 @@ export default defineConfig({
 npm run dev
 ```
 Your browser should open to http://localhost:5173.
+
+### AI Write (Anthropic / OpenAI / Gemini)
+
+See **[AI_SETUP.md](./AI_SETUP.md)** – add your API key to `.env` and run `npm run dev`.
