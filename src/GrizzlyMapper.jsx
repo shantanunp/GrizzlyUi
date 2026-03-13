@@ -440,6 +440,51 @@ const getAllExpandedIds = (inputSchema, outputSchema) => {
   return new Set(['input', 'output', ...inputIds, ...outputIds]);
 };
 
+// ── AI Provider Config ────────────────────────────────────────────────────────
+// Swap provider here without touching any other code.
+// Each provider needs: url, headers, buildBody(prompt), extractText(responseJson)
+const AI_PROVIDER_CONFIG = {
+
+  // ── Anthropic (Claude) ───────────────────────────────────────────────────
+  anthropic: {
+    url: 'https://api.anthropic.com/v1/messages',
+    headers: { 'Content-Type': 'application/json' },
+    buildBody: (prompt) => JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+    extractText: (data) =>
+      (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim(),
+  },
+
+  // ── OpenAI (GPT) ─────────────────────────────────────────────────────────
+  // openai: {
+  //   url: 'https://api.openai.com/v1/chat/completions',
+  //   headers: { 'Content-Type': 'application/json', Authorization: 'Bearer YOUR_KEY' },
+  //   buildBody: (prompt) => JSON.stringify({
+  //     model: 'gpt-4o',
+  //     messages: [{ role: 'user', content: prompt }],
+  //   }),
+  //   extractText: (data) => data.choices?.[0]?.message?.content?.trim() ?? '',
+  // },
+
+  // ── Google Gemini ────────────────────────────────────────────────────────
+  // gemini: {
+  //   url: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=YOUR_KEY',
+  //   headers: { 'Content-Type': 'application/json' },
+  //   buildBody: (prompt) => JSON.stringify({
+  //     contents: [{ parts: [{ text: prompt }] }],
+  //   }),
+  //   extractText: (data) =>
+  //     data.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() ?? '',
+  // },
+};
+
+// Change this one line to switch provider: 'anthropic' | 'openai' | 'gemini'
+const ACTIVE_AI_PROVIDER = 'anthropic';
+// ─────────────────────────────────────────────────────────────────────────────
+
 const GrizzlyMappingTool = () => {
   const [step, setStep] = useState(1);
   const [inputSchema, setInputSchema] = useState(defaultInputSchema);
@@ -465,6 +510,29 @@ const GrizzlyMappingTool = () => {
   const [regFnExpanded, setRegFnExpanded] = useState(new Set());
 
   const allFunctions = registeredFunctions; // single source of truth
+
+  // ── Generic AI function writer ───────────────────────────────────────────
+  // Uses ACTIVE_AI_PROVIDER + AI_PROVIDER_CONFIG — swap provider at the top of the file.
+  const callAiApi = (description) => {
+    const provider = AI_PROVIDER_CONFIG[ACTIVE_AI_PROVIDER];
+    const prompt =
+      `Write a Python helper function for a data transformation pipeline.\n` +
+      `Description: "${description}"\n\n` +
+      `Rules:\n` +
+      `- Start with def function_name(...):\n` +
+      `- Use a clear, descriptive snake_case function name\n` +
+      `- Add a one-line docstring\n` +
+      `- Keep it concise and practical\n` +
+      `- Return only the raw Python code, no markdown, no explanation`;
+    return fetch(provider.url, {
+      method: 'POST',
+      headers: provider.headers,
+      body: provider.buildBody(prompt),
+    })
+      .then(r => r.json())
+      .then(data => provider.extractText(data));
+  };
+  // ────────────────────────────────────────────────────────────────────────
 
   const toggleRegFnExpand = (id) => setRegFnExpanded(prev => {
     const n = new Set(prev);
@@ -3201,16 +3269,57 @@ const GrizzlyMappingTool = () => {
                 <div className="border-t border-slate-100 pt-5">
                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Register new function</p>
                   {regFnForm === null ? (
-                    <button onClick={() => setRegFnForm({ desc: '', body: '' })}
+                    <button onClick={() => setRegFnForm({ desc: '', body: '', aiLoading: false, aiError: '' })}
                       className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-orange-300 rounded-xl text-sm text-orange-600 hover:bg-orange-50 font-medium transition-colors">
-                      <Plus className="w-4 h-4" /> Paste a function to register it
+                      <Plus className="w-4 h-4" /> Register a function
                     </button>
                   ) : (
                     <div className="space-y-3">
+                      {/* ── Step 1: Description ── */}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 mb-1">What does it do? <span className="text-slate-400 font-normal">(describe your function)</span></label>
+                        <div className="flex gap-2">
+                          <input
+                            autoFocus
+                            type="text"
+                            value={regFnForm.desc}
+                            onChange={e => setRegFnForm(f => ({...f, desc: e.target.value}))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && regFnForm.desc.trim() && !regFnForm.aiLoading) {
+                                setRegFnForm(f => ({...f, aiLoading: true, aiError: ''}));
+                                callAiApi(regFnForm.desc.trim())
+                                  .then(code => setRegFnForm(f => ({...f, body: code, aiLoading: false})))
+                                  .catch(() => setRegFnForm(f => ({...f, aiLoading: false, aiError: 'AI generation failed. Write it manually below.'})));
+                              }
+                            }}
+                            placeholder="e.g. Builds address text from format type"
+                            className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-orange-400"
+                          />
+                          <button
+                            onClick={() => {
+                              if (!regFnForm.desc.trim() || regFnForm.aiLoading) return;
+                              setRegFnForm(f => ({...f, aiLoading: true, aiError: ''}));
+                              callAiApi(regFnForm.desc.trim())
+                                .then(code => setRegFnForm(f => ({...f, body: code, aiLoading: false})))
+                                .catch(() => setRegFnForm(f => ({...f, aiLoading: false, aiError: 'AI generation failed. Write it manually below.'})));
+                            }}
+                            disabled={!regFnForm.desc.trim() || regFnForm.aiLoading}
+                            className="px-3 py-2 bg-orange-500 text-white rounded-lg text-xs font-medium hover:bg-orange-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shrink-0 transition-colors"
+                            title="Generate function with AI (or press Enter)">
+                            {regFnForm.aiLoading
+                              ? <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeDashoffset="8"/></svg>
+                              : <span>✦</span>
+                            }
+                            {regFnForm.aiLoading ? 'Writing…' : 'AI Write'}
+                          </button>
+                        </div>
+                        {regFnForm.aiError && <p className="text-xs text-red-500 mt-1">{regFnForm.aiError}</p>}
+                      </div>
+
+                      {/* ── Step 2: Function body ── */}
                       <div>
                         <label className="block text-xs font-medium text-slate-600 mb-1">Function body <span className="text-red-400">*</span></label>
                         <textarea
-                          autoFocus
                           value={regFnForm.body}
                           onChange={e => setRegFnForm(f => ({...f, body: e.target.value}))}
                           placeholder={`def my_helper(value):\n    # your logic here\n    return value`}
@@ -3231,14 +3340,7 @@ const GrizzlyMappingTool = () => {
                           );
                         })()}
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-600 mb-1">What does it do?</label>
-                        <input type="text" value={regFnForm.desc}
-                          onChange={e => setRegFnForm(f => ({...f, desc: e.target.value}))}
-                          placeholder="e.g. Builds address text from format type"
-                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:border-orange-400"
-                        />
-                      </div>
+
                       <div className="flex gap-2">
                         <button onClick={() => setRegFnForm(null)} className="flex-1 py-2 border border-slate-200 rounded-lg text-sm text-slate-500 hover:bg-slate-50">Cancel</button>
                         <button onClick={saveRegFn} disabled={!parseDefLine(regFnForm.body).name}
