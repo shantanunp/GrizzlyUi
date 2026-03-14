@@ -1,6 +1,8 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { writeFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 const providers = {
   anthropic: {
@@ -40,6 +42,39 @@ const providers = {
     }),
     extractText: (d) => d.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() ?? '',
   },
+}
+
+// Handles POST /api/grizzly/validate-and-save — writes generatedCode to stagingPath (before proxy)
+function grizzlyPublishPlugin() {
+  return {
+    name: 'grizzly-publish',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.method !== 'POST' || req.url !== '/api/grizzly/validate-and-save') return next()
+        let body = ''
+        req.on('data', (chunk) => (body += chunk))
+        req.on('end', () => {
+          try {
+            const { generatedCode, stagingPath } = JSON.parse(body || '{}')
+            if (!generatedCode || !stagingPath) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Missing generatedCode or stagingPath' }))
+              return
+            }
+            mkdirSync(dirname(stagingPath), { recursive: true })
+            writeFileSync(stagingPath, generatedCode, 'utf8')
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ saved: true }))
+          } catch (err) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: err.message, saved: false }))
+          }
+        })
+      })
+    },
+  }
 }
 
 function aiProxyPlugin(env) {
@@ -93,7 +128,7 @@ function aiProxyPlugin(env) {
 export default defineConfig(({ mode }) => {
   const env = { ...process.env, ...loadEnv(mode, process.cwd(), '') }
   return {
-    plugins: [react(), tailwindcss(), aiProxyPlugin(env)],
+    plugins: [grizzlyPublishPlugin(), react(), tailwindcss(), aiProxyPlugin(env)],
     server: {
       port: 5173,
       proxy: {
@@ -104,6 +139,10 @@ export default defineConfig(({ mode }) => {
           target: 'http://localhost:8080',
           changeOrigin: true,
           secure: false,
+          bypass(req) {
+            // Let Vite handle validate-and-save (writes file); proxy everything else to backend
+            if (req.url === '/api/grizzly/validate-and-save' && req.method === 'POST') return req.url
+          },
         },
       },
     },
