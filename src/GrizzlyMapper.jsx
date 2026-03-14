@@ -12,6 +12,60 @@ const GRIZZLY_STAGING_PATH = '/home/shantanu/Workspace/vscode/GrizzlyUi/src/data
 // other export from 'prism-react-renderer' e.g. themes.github, themes.dracula
 import { Highlight, themes as prismThemes } from 'prism-react-renderer';
 
+// Minimal editable code block: prism-react-renderer Highlight behind, transparent textarea on top.
+const EditableCodeBlock = ({ value, onChange, placeholder, rows = 8, style }) => {
+  const preRef = useRef(null);
+  const taRef = useRef(null);
+  const sharedStyle = {
+    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+    fontSize: '12px',
+    lineHeight: 1.6,
+    padding: 12,
+    margin: 0,
+    ...style,
+  };
+  const lineHeight = 1.6 * 12;
+  const minHeight = Math.round(rows * lineHeight + 24);
+
+  useEffect(() => {
+    if (!preRef.current || !taRef.current) return;
+    const sync = () => { preRef.current.scrollTop = taRef.current.scrollTop; preRef.current.scrollLeft = taRef.current.scrollLeft; };
+    const ta = taRef.current;
+    ta.addEventListener('scroll', sync);
+    return () => ta.removeEventListener('scroll', sync);
+  }, []);
+
+  return (
+    <div className="relative overflow-hidden" style={{ minHeight }}>
+      <div ref={preRef} className="absolute inset-0 overflow-auto bg-slate-50" style={{ pointerEvents: 'none' }}>
+        <Highlight theme={prismThemes.github} code={value || ' '} language="python">
+          {({ className, style: themeStyle, tokens, getLineProps, getTokenProps }) => (
+            <pre className={className} style={{ ...themeStyle, ...sharedStyle, overflow: 'auto', border: 'none', borderRadius: 0 }}>
+              {tokens.map((line, i) => (
+                <div key={i} {...getLineProps({ line })}>
+                  {line.map((token, key) => (
+                    <span key={key} {...getTokenProps({ token })} />
+                  ))}
+                </div>
+              ))}
+            </pre>
+          )}
+        </Highlight>
+      </div>
+      <textarea
+        ref={taRef}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        spellCheck={false}
+        rows={rows}
+        className="absolute inset-0 w-full resize-none border-0 bg-transparent text-transparent caret-slate-800 outline-none placeholder:text-slate-400"
+        style={{ ...sharedStyle, padding: sharedStyle.padding }}
+      />
+    </div>
+  );
+};
+
 //  Dark (current)
 // <Highlight theme={prismThemes.vsDark} ...>
 
@@ -3569,23 +3623,23 @@ const GrizzlyMappingTool = () => {
                       {/* ── Step 2: Function body ── */}
                       <div>
                         <label className="block text-xs font-medium text-slate-600 mb-1">Function body <span className="text-red-400">*</span></label>
-                        <textarea
-                          value={regFnForm.body}
-                          onChange={e => setRegFnForm(f => ({...f, body: e.target.value}))}
-                          placeholder={`def my_helper(value):\n    # your logic here\n    return value`}
-                          rows={8}
-                          spellCheck={false}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono focus:outline-none focus:border-orange-400 bg-slate-50 resize-none leading-relaxed"
-                        />
+                        <div className="rounded-lg border border-slate-300 overflow-hidden focus-within:border-orange-400">
+                          <EditableCodeBlock
+                            value={regFnForm.body}
+                            onChange={code => setRegFnForm(f => ({...f, body: code}))}
+                            placeholder={`def my_helper(value):\n    # your logic here\n    return value`}
+                            rows={8}
+                          />
+                        </div>
                         {(() => {
                           const { name, params } = parseDefLine(regFnForm.body);
                           if (!regFnForm.body.trim()) return null;
                           if (!name) return <p className="text-xs text-amber-600 mt-1">⚠ No <code className="bg-amber-50 px-0.5 rounded">def name(...):</code> found</p>;
                           return (
-                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                              <span className="text-xs text-slate-400">Detected:</span>
-                              <span className="font-mono text-xs px-2 py-0.5 bg-green-50 border border-green-200 text-green-700 rounded-full">{name}()</span>
-                              {params.map(p => <span key={p.id} className="font-mono text-xs px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded-full">{p.name}</span>)}
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                              <span>Detected:</span>
+                              <span className="font-mono">{name}()</span>
+                              {params.length > 0 && params.map(p => <span key={p.id} className="font-mono text-slate-400">{p.name}</span>)}
                             </div>
                           );
                         })()}
