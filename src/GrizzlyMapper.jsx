@@ -3203,7 +3203,7 @@ const GrizzlyMappingTool = () => {
       const res = await fetch(`${GRIZZLY_API}/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ templateJson: modules, sampleInput: inputJson }),
+        body: JSON.stringify({ templateCode: generateCode(), sampleInput: inputJson }),
       });
       const data = await res.json();
       // Backend returns { output: {...}, error: "..." }
@@ -3231,7 +3231,7 @@ const GrizzlyMappingTool = () => {
       const res = await fetch(`${GRIZZLY_API}/validate-and-save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappingFamily, templateJson: modules, stagingPath: GRIZZLY_STAGING_PATH, generatedCode: generateCode() }),
+        body: JSON.stringify({ mappingFamily, generatedCode: generateCode() }),
       });
       const data = await res.json();
       if (res.ok && data.saved) {
@@ -3314,7 +3314,7 @@ const GrizzlyMappingTool = () => {
       const res = await fetch(`${GRIZZLY_API}/test-cases/run-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappingFamily: gdRunFamily.trim() || mappingFamily }),
+        body: JSON.stringify({ mappingFamily: gdRunFamily.trim() || mappingFamily, generatedCode: generateCode() }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -3335,7 +3335,7 @@ const GrizzlyMappingTool = () => {
       const res = await fetch(`${GRIZZLY_API}/test-cases/run-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappingFamily }),
+        body: JSON.stringify({ mappingFamily, generatedCode: generateCode() }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
