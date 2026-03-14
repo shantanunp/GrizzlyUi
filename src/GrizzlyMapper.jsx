@@ -13,7 +13,7 @@ const GRIZZLY_STAGING_PATH = '/home/shantanu/Workspace/vscode/GrizzlyUi/src/data
 import { Highlight, themes as prismThemes } from 'prism-react-renderer';
 
 // Minimal editable code block: prism-react-renderer Highlight behind, transparent textarea on top.
-const EditableCodeBlock = ({ value, onChange, placeholder, rows = 8, style }) => {
+const EditableCodeBlock = ({ value, onChange, placeholder, rows = 8, language = 'python', style, fillHeight = false }) => {
   const preRef = useRef(null);
   const taRef = useRef(null);
   const sharedStyle = {
@@ -25,7 +25,8 @@ const EditableCodeBlock = ({ value, onChange, placeholder, rows = 8, style }) =>
     ...style,
   };
   const lineHeight = 1.6 * 12;
-  const minHeight = Math.round(rows * lineHeight + 24);
+  const minHeight = fillHeight ? undefined : Math.round(rows * lineHeight + 24);
+  const heightStyle = fillHeight ? { height: '100%' } : {};
 
   useEffect(() => {
     if (!preRef.current || !taRef.current) return;
@@ -36,9 +37,9 @@ const EditableCodeBlock = ({ value, onChange, placeholder, rows = 8, style }) =>
   }, []);
 
   return (
-    <div className="relative overflow-hidden" style={{ minHeight }}>
+    <div className={`relative overflow-hidden ${fillHeight ? 'h-full' : ''}`} style={{ minHeight, ...heightStyle }}>
       <div ref={preRef} className="absolute inset-0 overflow-auto bg-slate-50" style={{ pointerEvents: 'none' }}>
-        <Highlight theme={prismThemes.github} code={value || ' '} language="python">
+        <Highlight theme={prismThemes.github} code={value || ' '} language={language}>
           {({ className, style: themeStyle, tokens, getLineProps, getTokenProps }) => (
             <pre className={className} style={{ ...themeStyle, ...sharedStyle, overflow: 'auto', border: 'none', borderRadius: 0 }}>
               {tokens.map((line, i) => (
@@ -59,7 +60,7 @@ const EditableCodeBlock = ({ value, onChange, placeholder, rows = 8, style }) =>
         placeholder={placeholder}
         spellCheck={false}
         rows={rows}
-        className="absolute inset-0 w-full resize-none border-0 bg-transparent text-transparent caret-slate-800 outline-none placeholder:text-slate-400"
+        className="absolute inset-0 w-full resize-none border-0 bg-transparent text-transparent caret-slate-800 outline-none placeholder:text-slate-500 placeholder:opacity-90"
         style={{ ...sharedStyle, padding: sharedStyle.padding }}
       />
     </div>
@@ -3157,7 +3158,7 @@ const GrizzlyMappingTool = () => {
   const GRIZZLY_API = '/api/grizzly';
 
   // Preview
-  const [previewInput, setPreviewInput]       = useState('{\n  "field1": "value1",\n  "field2": "value2"\n}');
+  const [previewInput, setPreviewInput]       = useState('');
   const [previewOutput, setPreviewOutput]     = useState(null);   // null=not run, string=result
   const [previewError, setPreviewError]       = useState(null);
   const [previewRunning, setPreviewRunning]   = useState(false);
@@ -3836,21 +3837,25 @@ const GrizzlyMappingTool = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 divide-x divide-slate-200">
+            <div className="grid grid-cols-2 divide-x divide-slate-200 min-h-[24rem]">
               {/* Input pane */}
-              <div className="p-4">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Sample input (JSON)</p>
-                <textarea
-                  value={previewInput}
-                  onChange={e => { setPreviewInput(e.target.value); setPreviewRanOk(false); }}
-                  className="w-full h-44 font-mono text-xs p-3 border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:border-slate-400 resize-none"
-                  spellCheck={false}
-                />
+              <div className="p-4 flex flex-col min-h-0">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 shrink-0">Sample input (JSON)</p>
+                <div className="flex-1 min-h-0 rounded-lg border border-slate-200 overflow-hidden focus-within:border-slate-400 flex flex-col">
+                  <EditableCodeBlock
+                    value={previewInput}
+                    onChange={v => { setPreviewInput(v); setPreviewRanOk(false); }}
+                    placeholder="Paste JSON or type sample input here..."
+                    language="json"
+                    rows={8}
+                    fillHeight
+                  />
+                </div>
               </div>
               {/* Output pane */}
-              <div className="p-4">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Transformed output</p>
-                <div className={`w-full min-h-[11rem] rounded-lg overflow-auto border
+              <div className="p-4 flex flex-col min-h-0">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 shrink-0">Transformed output</p>
+                <div className={`flex-1 min-h-0 rounded-lg overflow-auto border flex flex-col
                   ${previewError ? 'border-red-200 bg-red-50'
                     : previewOutput ? 'border-emerald-200 bg-emerald-50'
                     : 'border-slate-200 bg-slate-50'}`}>
@@ -3859,9 +3864,11 @@ const GrizzlyMappingTool = () => {
                   ) : previewError ? (
                     <div className="p-3 font-mono text-xs text-red-700">{previewError}</div>
                   ) : previewOutput ? (
-                    <PrismCode code={previewOutput} language="json" />
+                    <div className="flex-1 min-h-0 overflow-auto">
+                      <PrismCode code={previewOutput} language="json" />
+                    </div>
                   ) : (
-                    <div className="p-3 text-slate-400 italic font-mono text-xs">Run preview to see output here...</div>
+                    <div className="p-3 text-slate-500 font-mono text-xs select-none opacity-90">Run preview to see output here...</div>
                   )}
                 </div>
               </div>
