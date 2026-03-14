@@ -1,7 +1,11 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
-import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers, CheckCircle2, Play, FlaskConical, BookOpen, Eye, Save } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Layers, CheckCircle2, Play, FlaskConical, BookOpen, Eye, Save, Pencil } from 'lucide-react';
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+// Staging path for Validate & Save — backend writes transform.py here. Supports Linux + Windows.
+// Examples: '/tmp/grizzly/transform.py' (Linux/Mac) or 'C:\\Users\\you\\grizzly\\transform.py' (Windows)
+const GRIZZLY_STAGING_PATH = '/home/shantanu/Workspace/vscode/GrizzlyUi/src/data/transform.py';
 
 // ── Prism-based syntax highlighter ───────────────────────────────────────────
 // Uses prism-react-renderer. Theme is VS Dark — change themes.vsDark to any
@@ -3099,6 +3103,8 @@ const GrizzlyMappingTool = () => {
   const [newCaseInput, setNewCaseInput]       = useState('');
   const [newCaseExpected, setNewCaseExpected] = useState('');
   const [newCaseMsg, setNewCaseMsg]           = useState(null); // {ok, text}
+  const [gdViewCase, setGdViewCase]           = useState(null);  // case to view (modal)
+  const [gdEditCase, setGdEditCase]          = useState(null);  // case to edit (pre-fills add form)
 
   // Derive mapping family name from modules (fallback to 'default')
   const mappingFamily = modules[0]?.name || 'main';
@@ -3144,7 +3150,7 @@ const GrizzlyMappingTool = () => {
       const res = await fetch(`${GRIZZLY_API}/validate-and-save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappingFamily, templateJson: modules }),
+        body: JSON.stringify({ mappingFamily, templateJson: modules, stagingPath: GRIZZLY_STAGING_PATH }),
       });
       const data = await res.json();
       if (res.ok && data.saved) {
@@ -3201,21 +3207,21 @@ const GrizzlyMappingTool = () => {
     catch (e) { setNewCaseMsg({ ok: false, text: 'Input JSON invalid: ' + e.message }); return; }
     try { parsedExpected = JSON.parse(newCaseExpected); }
     catch (e) { setNewCaseMsg({ ok: false, text: 'Expected JSON invalid: ' + e.message }); return; }
+    const isEdit = !!gdEditCase;
     try {
-      const res = await fetch(`${GRIZZLY_API}/test-cases`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          service: newCaseSvc.trim() || 'default',
-          mappingFamily: newCaseFamily.trim() || mappingFamily,
-          testName: newCaseName.trim(),
-          input: parsedInput,
-          expected: parsedExpected,
-        }),
-      });
+      const body = {
+        service: newCaseSvc.trim() || 'default',
+        mappingFamily: newCaseFamily.trim() || mappingFamily,
+        testName: newCaseName.trim(),
+        input: parsedInput,
+        expected: parsedExpected,
+      };
+      const res = isEdit
+        ? await fetch(`${GRIZZLY_API}/test-cases/${gdEditCase.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        : await fetch(`${GRIZZLY_API}/test-cases`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setNewCaseMsg({ ok: true, text: 'Test case saved!' });
-      setNewCaseName(''); setNewCaseInput(''); setNewCaseExpected('');
+      setNewCaseMsg({ ok: true, text: isEdit ? 'Test case updated!' : 'Test case saved!' });
+      setNewCaseName(''); setNewCaseInput(''); setNewCaseExpected(''); setGdEditCase(null);
       setTimeout(() => { setNewCaseMsg(null); setGdTab('list'); loadGdCases(); }, 900);
     } catch (e) { setNewCaseMsg({ ok: false, text: e.message }); }
   };
@@ -3246,11 +3252,10 @@ const GrizzlyMappingTool = () => {
           <span className="font-bold text-slate-800">Grizzly</span>
         </div>
         <div className="flex items-center gap-1">
-          {[1, 2, 2.5, 3].map(n => (
-            <span key={n} className={`flex items-center justify-center text-xs font-bold rounded-full
-              ${n === 2.5 ? 'w-8 h-8' : 'w-8 h-8'}
+          {[1, 2, 3, 4].map(n => (
+            <span key={n} className={`flex items-center justify-center text-xs font-bold rounded-full w-8 h-8
               ${step === n ? 'bg-slate-700 text-white' : step > n ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
-              {n === 2.5 ? <Eye className="w-4 h-4" /> : n === 1 ? '1' : n === 2 ? '2' : '3'}
+              {n === 4 ? <Eye className="w-4 h-4" /> : String(n)}
             </span>
           ))}
         </div>
@@ -3397,8 +3402,8 @@ const GrizzlyMappingTool = () => {
                     <X className="w-4 h-4" /> Close
                   </button>
                 )}
-                <button onClick={() => { setStep(2.5); loadGdCases(); }} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
-                  <Eye className="w-4 h-4" /> Preview &amp; Test
+                <button onClick={() => setStep(3)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
+                  <Code className="w-4 h-4" /> View Code
                 </button>
               </div>
             </div>
@@ -3676,18 +3681,24 @@ const GrizzlyMappingTool = () => {
 
 
 
-      {step === 2.5 && (
+      {step === 4 && (
         <div className="max-w-5xl mx-auto p-6">
           <div className="flex items-center justify-between mb-5">
             <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
               <Eye className="w-5 h-5 text-slate-500" /> Preview &amp; Test
             </h1>
             <div className="flex gap-2">
-              <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-sm text-slate-600 hover:bg-slate-50">
-                <ArrowLeft className="w-4 h-4" /> Back to mapping
+              <button onClick={() => { setStep(3); loadGdCases(); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-sm text-slate-600 hover:bg-slate-50">
+                <ArrowLeft className="w-4 h-4" /> Back to code
               </button>
-              <button onClick={() => setStep(3)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
-                <Layers className="w-4 h-4" /> Review &amp; Export
+              <button
+                onClick={validateAndSave}
+                disabled={!previewRanOk || gdSaving}
+                title={!previewRanOk ? 'Run preview first' : 'Runs golden dataset regression then saves'}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 text-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-emerald-700"
+              >
+                <Save className="w-4 h-4" />
+                {gdSaving ? 'Validating...' : 'Validate & Save'}
               </button>
             </div>
           </div>
@@ -3726,14 +3737,19 @@ const GrizzlyMappingTool = () => {
               {/* Output pane */}
               <div className="p-4">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Transformed output</p>
-                <div className={`w-full h-44 font-mono text-xs p-3 rounded-lg overflow-auto border
-                  ${previewError ? 'border-red-200 bg-red-50 text-red-700'
-                    : previewOutput ? 'border-emerald-200 bg-emerald-50 text-slate-800'
-                    : 'border-slate-200 bg-slate-50 text-slate-400 italic'}`}>
-                  {previewRunning ? 'Running...'
-                    : previewError ? previewError
-                    : previewOutput ? previewOutput
-                    : 'Run preview to see output here...'}
+                <div className={`w-full min-h-[11rem] rounded-lg overflow-auto border
+                  ${previewError ? 'border-red-200 bg-red-50'
+                    : previewOutput ? 'border-emerald-200 bg-emerald-50'
+                    : 'border-slate-200 bg-slate-50'}`}>
+                  {previewRunning ? (
+                    <div className="p-3 text-slate-400 italic">Running...</div>
+                  ) : previewError ? (
+                    <div className="p-3 font-mono text-xs text-red-700">{previewError}</div>
+                  ) : previewOutput ? (
+                    <PrismCode code={previewOutput} language="json" />
+                  ) : (
+                    <div className="p-3 text-slate-400 italic font-mono text-xs">Run preview to see output here...</div>
+                  )}
                 </div>
               </div>
             </div>
@@ -3751,24 +3767,16 @@ const GrizzlyMappingTool = () => {
                 </button>
                 <span className="text-xs text-slate-400">Preview never saves — safe to experiment.</span>
               </div>
-              {/* Save gate */}
-              <div className="flex items-center gap-3">
-                {gdSaveStatus === 'saved' && (
-                  <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Saved to config DB</span>
-                )}
-                {gdSaveStatus === 'blocked' && (
-                  <span className="text-xs text-red-600">Regression failed — not saved</span>
-                )}
-                <button
-                  onClick={validateAndSave}
-                  disabled={!previewRanOk || gdSaving}
-                  title={!previewRanOk ? 'Run preview first' : 'Runs golden dataset regression then saves'}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 text-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-emerald-700"
-                >
-                  <Save className="w-4 h-4" />
-                  {gdSaving ? 'Validating...' : 'Validate &amp; Save →'}
-                </button>
-              </div>
+              {(gdSaveStatus === 'saved' || gdSaveStatus === 'blocked') && (
+                <div className="flex items-center gap-3">
+                  {gdSaveStatus === 'saved' && (
+                    <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Saved</span>
+                  )}
+                  {gdSaveStatus === 'blocked' && (
+                    <span className="text-xs text-red-600">Regression failed — not saved</span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Regression failures inline under save */}
@@ -3868,6 +3876,8 @@ const GrizzlyMappingTool = () => {
                           <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Mapping family</th>
                           <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Test name</th>
                           <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Status</th>
+                          <th className="px-3 py-2 text-right">View</th>
+                          <th className="px-3 py-2 text-right">Edit</th>
                           <th className="px-3 py-2"></th>
                         </tr>
                       </thead>
@@ -3889,6 +3899,17 @@ const GrizzlyMappingTool = () => {
                                   : c.lastRunStatus === 'FAIL'
                                   ? <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200 text-[10px] font-medium">FAIL</span>
                                   : <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium">PENDING</span>}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <button onClick={() => setGdViewCase(c)} className="p-1 text-slate-400 hover:text-slate-700 transition-colors" title="View">
+                                  <Eye className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <button onClick={() => { setGdEditCase(c); setGdTab('add'); setNewCaseSvc(c.service||''); setNewCaseFamily(c.mappingFamily||''); setNewCaseName(c.testName||''); setNewCaseInput(typeof c.input==='object'?JSON.stringify(c.input,null,2):(c.input||'')); setNewCaseExpected(typeof c.expected==='object'?JSON.stringify(c.expected,null,2):(c.expected||'')); }}
+                                  className="p-1 text-slate-400 hover:text-slate-700 transition-colors" title="Edit">
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
                               </td>
                               <td className="px-3 py-2 text-right">
                                 <button onClick={() => deleteGdCase(c.id)}
@@ -3947,9 +3968,9 @@ const GrizzlyMappingTool = () => {
                 <div className="flex items-center gap-3">
                   <button onClick={addGdCase}
                     className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-2">
-                    <Save className="w-4 h-4" /> Save test case
+                    <Save className="w-4 h-4" /> {gdEditCase ? 'Update test case' : 'Save test case'}
                   </button>
-                  <button onClick={() => { setGdTab('list'); loadGdCases(); }}
+                  <button onClick={() => { setGdTab('list'); setGdEditCase(null); loadGdCases(); }}
                     className="px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
                     Cancel
                   </button>
@@ -4007,11 +4028,11 @@ const GrizzlyMappingTool = () => {
                                     {r.status === 'FAIL' && r.diff && Object.keys(r.diff).length > 0 && (
                                       <div className="space-y-0.5">
                                         {Object.entries(r.diff).map(([field, delta]) => (
-                                          <div key={field}>
-                                            <span className="text-slate-400">{field}: </span>
-                                            <span className="text-red-500">{JSON.stringify(delta.expected)}</span>
-                                            <span className="mx-1 text-slate-400">→</span>
-                                            <span className="text-emerald-600">{JSON.stringify(delta.actual)}</span>
+                                          <div key={field} className="flex items-start gap-1">
+                                            <span className="text-slate-400 shrink-0">{field}:</span>
+                                            <span className="text-red-500">{typeof delta.expected === 'object' ? JSON.stringify(delta.expected) : String(delta.expected)}</span>
+                                            <span className="text-slate-400 shrink-0">→</span>
+                                            <span className="text-emerald-600">{typeof delta.actual === 'object' ? JSON.stringify(delta.actual) : String(delta.actual)}</span>
                                           </div>
                                         ))}
                                       </div>
@@ -4035,34 +4056,52 @@ const GrizzlyMappingTool = () => {
                 )}
               </div>
             )}
+
+            {/* View modal */}
+            {gdViewCase && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setGdViewCase(null)}>
+                <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[85vh] overflow-hidden m-4" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-slate-50">
+                    <h3 className="font-semibold text-slate-700">View: {gdViewCase.testName}</h3>
+                    <button onClick={() => setGdViewCase(null)} className="p-1.5 text-slate-400 hover:text-slate-700 rounded"><X className="w-4 h-4" /></button>
+                  </div>
+                  <div className="p-4 overflow-y-auto max-h-[calc(85vh-4rem)] grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Input JSON</p>
+                      <div className="rounded-lg overflow-hidden border border-slate-200">
+                        <PrismCode code={typeof gdViewCase.input === 'object' ? JSON.stringify(gdViewCase.input, null, 2) : (gdViewCase.input || '{}')} language="json" />
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Expected output JSON</p>
+                      <div className="rounded-lg overflow-hidden border border-slate-200">
+                        <PrismCode code={typeof gdViewCase.expected === 'object' ? JSON.stringify(gdViewCase.expected, null, 2) : (gdViewCase.expected || '{}')} language="json" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
 
       {step === 3 && (
-        <div className="max-w-4xl mx-auto p-6">
-          <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Export</h1>
-          <div className="rounded-lg overflow-hidden border border-slate-700 mb-4 max-h-[500px] overflow-y-auto">
-            <PrismCode code={generateCode()} language="python" />
+        <div className="max-w-4xl mx-auto p-6 pb-12">
+          <div className="flex items-center justify-between mb-4">
+            <h1 className="text-xl font-bold text-slate-800">Generated template</h1>
+            <div className="flex gap-2">
+              <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700 hover:bg-slate-50">
+                <ArrowLeft className="w-4 h-4" /> Back to mapping
+              </button>
+              <button onClick={() => { loadGdCases(); setStep(4); }} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
+                <Eye className="w-4 h-4" /> Preview &amp; Test
+              </button>
+            </div>
           </div>
-          <div className="flex gap-4">
-            <button onClick={() => { expandBothTrees(); setStep(2.5); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
-              <ArrowLeft className="w-4 h-4" /> Back to mapping
-            </button>
-            <button
-              onClick={() => {
-                const blob = new Blob([generateCode()], { type: 'text/plain' });
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'transform.py';
-                a.click();
-                URL.revokeObjectURL(a.href);
-              }}
-              className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"
-            >
-              <Download className="w-4 h-4" /> Download transform.py
-            </button>
+          <div className="rounded-lg overflow-hidden border border-slate-700 bg-white">
+            <PrismCode code={generateCode()} language="python" />
           </div>
         </div>
       )}
