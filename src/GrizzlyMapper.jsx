@@ -3928,7 +3928,19 @@ const GrizzlyMappingTool = () => {
                 ].map(t => (
                   <button
                     key={t.key}
-                    onClick={() => { setGdTab(t.key); if (t.key === 'list') loadGdCases(); }}
+                    onClick={() => {
+                      setGdTab(t.key);
+                      if (t.key === 'list') loadGdCases();
+                      if (t.key === 'add') {
+                        setGdEditCase(null);
+                        setNewCaseSvc('');
+                        setNewCaseFamily(mappingFamily || '');
+                        setNewCaseName('');
+                        setNewCaseInput('');
+                        setNewCaseExpected('');
+                        setNewCaseMsg(null);
+                      }
+                    }}
                     className={`px-3 py-1 rounded text-xs font-medium transition-colors
                       ${gdTab === t.key ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                   >
