@@ -3841,16 +3841,13 @@ const GrizzlyMappingTool = () => {
               {/* Input pane */}
               <div className="p-4 flex flex-col min-h-0">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 shrink-0">Sample input (JSON)</p>
-                <div className="flex-1 min-h-0 rounded-lg border border-slate-200 overflow-hidden focus-within:border-slate-400 flex flex-col">
-                  <EditableCodeBlock
-                    value={previewInput}
-                    onChange={v => { setPreviewInput(v); setPreviewRanOk(false); }}
-                    placeholder="Paste JSON or type sample input here..."
-                    language="json"
-                    rows={8}
-                    fillHeight
-                  />
-                </div>
+                <textarea
+                  value={previewInput}
+                  onChange={e => { setPreviewInput(e.target.value); setPreviewRanOk(false); }}
+                  placeholder="Paste JSON or type sample input here..."
+                  spellCheck={false}
+                  className="flex-1 min-h-0 w-full p-3 text-xs font-mono border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:border-slate-400 resize-none placeholder:text-slate-500"
+                />
               </div>
               {/* Output pane */}
               <div className="p-4 flex flex-col min-h-0">
@@ -3864,9 +3861,7 @@ const GrizzlyMappingTool = () => {
                   ) : previewError ? (
                     <div className="p-3 font-mono text-xs text-red-700">{previewError}</div>
                   ) : previewOutput ? (
-                    <div className="flex-1 min-h-0 overflow-auto">
-                      <PrismCode code={previewOutput} language="json" />
-                    </div>
+                    <pre className="flex-1 min-h-0 p-3 text-xs font-mono overflow-auto whitespace-pre-wrap">{previewOutput}</pre>
                   ) : (
                     <div className="p-3 text-slate-500 font-mono text-xs select-none opacity-90">Run preview to see output here...</div>
                   )}
