@@ -1471,7 +1471,14 @@ const GrizzlyMappingTool = () => {
 
     const addLcChild = (assignmentId, type) => {
     const newChild = { id: generateId(), type };
-    if (type === 'assignment') { newChild.target = ''; newChild.expression = ''; }
+    if (type === 'assignment') {
+      newChild.target = '';
+      newChild.expression = '';
+      newChild.exprType = 'input';
+      newChild.staticValue = '';
+      newChild.funcName = 'now';
+      newChild.funcArgs = '';
+    }
     else if (type === 'if') { newChild.lcTarget = ''; newChild.condition = ''; newChild.ifExpr = ''; newChild.elifBranches = []; newChild.elseExpr = ''; }
     const updateInItems = (items) => items.map(item => {
       if (item.id === assignmentId) return { ...item, lcChildren: [...(item.lcChildren || []), newChild] };
@@ -1489,6 +1496,21 @@ const GrizzlyMappingTool = () => {
     const updateInItems = (items) => items.map(item => {
       if (item.id === assignmentId) {
         return { ...item, lcChildren: (item.lcChildren || []).map(c => c.id === childId ? { ...c, [field]: value } : c) };
+      }
+      let u = { ...item };
+      if (u.children) u = { ...u, children: updateInItems(u.children) };
+      if (u.elifBlocks) u = { ...u, elifBlocks: u.elifBlocks.map(eb => ({ ...eb, children: updateInItems(eb.children || []) })) };
+      if (u.elseBlock) u = { ...u, elseBlock: { ...u.elseBlock, children: updateInItems(u.elseBlock.children || []) } };
+      return u;
+    });
+    updateModuleMappings(activeModule, updateInItems(mappings));
+  };
+
+  const updateLcChildFull = (assignmentId, childId, replacement) => {
+    const { id: _id, ...rest } = replacement;
+    const updateInItems = (items) => items.map(item => {
+      if (item.id === assignmentId) {
+        return { ...item, lcChildren: (item.lcChildren || []).map(c => c.id === childId ? { ...c, ...rest } : c) };
       }
       let u = { ...item };
       if (u.children) u = { ...u, children: updateInItems(u.children) };
@@ -1993,7 +2015,7 @@ const GrizzlyMappingTool = () => {
                         if (child.type==='if') return renderLcIf(child);
                         return renderFieldRow(
                           child.id, child,
-                          (updated) => { Object.entries(updated).forEach(([k,v]) => { if(k!=='id') updateLcChild(item.id,child.id,k,v); }); },
+                          (updated) => updateLcChildFull(item.id, child.id, { ...child, ...updated }),
                           () => deleteLcChild(item.id, child.id)
                         );
                       })}
