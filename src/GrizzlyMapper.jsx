@@ -33,6 +33,7 @@ const PrismCode = ({ code, language = 'python' }) => (
           lineHeight: '1.6',
           overflowX: 'auto',
           borderRadius: '0',
+          border: 'none',
         }}
       >
         {tokens.map((line, i) => (
@@ -4088,7 +4089,7 @@ const GrizzlyMappingTool = () => {
 
 
       {step === 3 && (
-        <div className="max-w-4xl mx-auto p-6 pb-12">
+        <div className="pl-8 pr-6 py-6 pb-12 min-h-screen">
           <div className="flex items-center justify-between mb-4">
             <h1 className="text-xl font-bold text-slate-800">Generated template</h1>
             <div className="flex gap-2">
@@ -4100,7 +4101,7 @@ const GrizzlyMappingTool = () => {
               </button>
             </div>
           </div>
-          <div className="rounded-lg overflow-hidden border border-slate-700 bg-white">
+          <div className="bg-white">
             <PrismCode code={generateCode()} language="python" />
           </div>
         </div>
