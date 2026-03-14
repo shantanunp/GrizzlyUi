@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
-import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers, CheckCircle2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Trash2, Move, Code, Search, File, Folder, Database, X, Upload, FileCode, ArrowRight, ArrowLeft, Download, Layers, CheckCircle2, Play, FlaskConical, BookOpen, Eye, Save } from 'lucide-react';
 
 const uid = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -509,6 +509,7 @@ const GrizzlyMappingTool = () => {
   const BUILTIN_REG_FUNCTIONS = [
     { id: 'rf_now',        name: 'now',        desc: 'Current date and time',               args: false, builtin: true },
     { id: 'rf_formatDate', name: 'formatDate', desc: 'Format a date value',                 args: true,  builtin: true, argsPlaceholder: 'now(), "yyyy-MM-dd HH:mm:ss"' },
+    { id: 'rf_concat',     name: 'concat',     desc: 'Join values with separator, skipping null/empty', args: true, builtin: true, argsPlaceholder: '" ", INPUT.a, INPUT.b' },
   ];
   const [registeredFunctions, setRegisteredFunctions] = useState(BUILTIN_REG_FUNCTIONS);
   const [showRegFnPanel, setShowRegFnPanel] = useState(false);
@@ -3066,6 +3067,177 @@ const GrizzlyMappingTool = () => {
     setStep(2);
   };
 
+  // ── Preview & Golden Dataset state ──────────────────────────────────────────
+  // Relative path — Vite dev server proxies /api/grizzly → http://localhost:8080
+  // so there are zero CORS issues. In prod, point this at your deployed backend.
+  const GRIZZLY_API = '/api/grizzly';
+
+  // Preview
+  const [previewInput, setPreviewInput]       = useState('{\n  "field1": "value1",\n  "field2": "value2"\n}');
+  const [previewOutput, setPreviewOutput]     = useState(null);   // null=not run, string=result
+  const [previewError, setPreviewError]       = useState(null);
+  const [previewRunning, setPreviewRunning]   = useState(false);
+  const [previewRanOk, setPreviewRanOk]       = useState(false);  // gate for Save
+
+  // Golden dataset
+  const [gdTab, setGdTab]                     = useState('list'); // 'list' | 'add' | 'run'
+  const [gdCases, setGdCases]                 = useState([]);
+  const [gdLoading, setGdLoading]             = useState(false);
+  const [gdFilterSvc, setGdFilterSvc]         = useState('');
+  const [gdFilterStatus, setGdFilterStatus]   = useState('');
+  const [gdFilterName, setGdFilterName]       = useState('');
+  const [gdRunFamily, setGdRunFamily]         = useState('');
+  const [gdRunResults, setGdRunResults]       = useState(null);
+  const [gdRunning, setGdRunning]             = useState(false);
+  const [gdSaving, setGdSaving]               = useState(false);
+  const [gdSaveStatus, setGdSaveStatus]       = useState(null); // null | 'saving' | 'saved' | 'blocked'
+  const [gdSaveFailures, setGdSaveFailures]   = useState([]);
+  // Add form
+  const [newCaseSvc, setNewCaseSvc]           = useState('');
+  const [newCaseFamily, setNewCaseFamily]     = useState('');
+  const [newCaseName, setNewCaseName]         = useState('');
+  const [newCaseInput, setNewCaseInput]       = useState('');
+  const [newCaseExpected, setNewCaseExpected] = useState('');
+  const [newCaseMsg, setNewCaseMsg]           = useState(null); // {ok, text}
+
+  // Derive mapping family name from modules (fallback to 'default')
+  const mappingFamily = modules[0]?.name || 'main';
+
+  // ── Preview: call POST /api/grizzly/preview ──────────────────────────────
+  const runPreview = async () => {
+    setPreviewRunning(true);
+    setPreviewOutput(null);
+    setPreviewError(null);
+    setPreviewRanOk(false);
+    let inputJson;
+    try { inputJson = JSON.parse(previewInput); }
+    catch (e) { setPreviewError('Invalid JSON: ' + e.message); setPreviewRunning(false); return; }
+    try {
+      const res = await fetch(`${GRIZZLY_API}/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templateJson: modules, sampleInput: inputJson }),
+      });
+      const data = await res.json();
+      // Backend returns { output: {...}, error: "..." }
+      // error field is used (not message)
+      if (!res.ok || data.error) {
+        setPreviewError(data.error || data.message || 'Preview failed');
+      } else {
+        // output may be nested under data.output or returned flat
+        const outputObj = data.output !== undefined ? data.output : data;
+        setPreviewOutput(JSON.stringify(outputObj, null, 2));
+        setPreviewRanOk(true);
+      }
+    } catch (e) {
+      setPreviewError('Cannot reach Grizzly Engine: ' + e.message);
+    }
+    setPreviewRunning(false);
+  };
+
+  // ── Save: call POST /api/grizzly/validate-and-save ───────────────────────
+  const validateAndSave = async () => {
+    setGdSaving(true);
+    setGdSaveStatus('saving');
+    setGdSaveFailures([]);
+    try {
+      const res = await fetch(`${GRIZZLY_API}/validate-and-save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mappingFamily, templateJson: modules }),
+      });
+      const data = await res.json();
+      if (res.ok && data.saved) {
+        setGdSaveStatus('saved');
+      } else {
+        setGdSaveStatus('blocked');
+        setGdSaveFailures(data.failures || []);
+      }
+    } catch (e) {
+      setGdSaveStatus('blocked');
+      setGdSaveFailures([{ testName: 'network', error: e.message }]);
+    }
+    setGdSaving(false);
+  };
+
+  // ── Golden dataset: load list ────────────────────────────────────────────
+  // Accept explicit filter args so callers can pass fresh values without
+  // depending on state that may not have settled yet.
+  const loadGdCases = async (svc = gdFilterSvc, status = gdFilterStatus) => {
+    setGdLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (svc)    params.set('service', svc);
+      if (status) params.set('status', status);
+      const url = `${GRIZZLY_API}/test-cases${params.toString() ? '?' + params : ''}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGdCases(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setGdCases([]);
+    }
+    setGdLoading(false);
+  };
+
+  const deleteGdCase = async (id) => {
+    if (!window.confirm('Soft delete this test case?')) return;
+    try {
+      const res = await fetch(`${GRIZZLY_API}/test-cases/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setGdCases(prev => prev.filter(c => c.id !== id));
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
+    }
+  };
+
+  const addGdCase = async () => {
+    setNewCaseMsg(null);
+    if (!newCaseName.trim() || !newCaseInput.trim() || !newCaseExpected.trim()) {
+      setNewCaseMsg({ ok: false, text: 'Fill in service, mapping family, test name, input and expected.' }); return;
+    }
+    let parsedInput, parsedExpected;
+    try { parsedInput = JSON.parse(newCaseInput); }
+    catch (e) { setNewCaseMsg({ ok: false, text: 'Input JSON invalid: ' + e.message }); return; }
+    try { parsedExpected = JSON.parse(newCaseExpected); }
+    catch (e) { setNewCaseMsg({ ok: false, text: 'Expected JSON invalid: ' + e.message }); return; }
+    try {
+      const res = await fetch(`${GRIZZLY_API}/test-cases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service: newCaseSvc.trim() || 'default',
+          mappingFamily: newCaseFamily.trim() || mappingFamily,
+          testName: newCaseName.trim(),
+          input: parsedInput,
+          expected: parsedExpected,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setNewCaseMsg({ ok: true, text: 'Test case saved!' });
+      setNewCaseName(''); setNewCaseInput(''); setNewCaseExpected('');
+      setTimeout(() => { setNewCaseMsg(null); setGdTab('list'); loadGdCases(); }, 900);
+    } catch (e) { setNewCaseMsg({ ok: false, text: e.message }); }
+  };
+
+  const runGdRegression = async () => {
+    setGdRunning(true);
+    setGdRunResults(null);
+    try {
+      const res = await fetch(`${GRIZZLY_API}/test-cases/run-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mappingFamily: gdRunFamily.trim() || mappingFamily }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGdRunResults(data);
+    } catch (e) {
+      setGdRunResults({ error: e.message });
+    }
+    setGdRunning(false);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center sticky top-0 z-10">
@@ -3073,9 +3245,13 @@ const GrizzlyMappingTool = () => {
           <FileCode className="w-6 h-6 text-slate-600" />
           <span className="font-bold text-slate-800">Grizzly</span>
         </div>
-        <div className="flex gap-2">
-          {[1, 2, 3].map(n => (
-            <span key={n} className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${step === n ? 'bg-slate-700 text-white' : 'bg-slate-200 text-slate-500'}`}>{n}</span>
+        <div className="flex items-center gap-1">
+          {[1, 2, 2.5, 3].map(n => (
+            <span key={n} className={`flex items-center justify-center text-xs font-bold rounded-full
+              ${n === 2.5 ? 'w-8 h-8' : 'w-8 h-8'}
+              ${step === n ? 'bg-slate-700 text-white' : step > n ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
+              {n === 2.5 ? <Eye className="w-4 h-4" /> : n === 1 ? '1' : n === 2 ? '2' : '3'}
+            </span>
           ))}
         </div>
       </header>
@@ -3221,8 +3397,8 @@ const GrizzlyMappingTool = () => {
                     <X className="w-4 h-4" /> Close
                   </button>
                 )}
-                <button onClick={() => setStep(3)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
-                  <Layers className="w-4 h-4" /> Review changes
+                <button onClick={() => { setStep(2.5); loadGdCases(); }} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
+                  <Eye className="w-4 h-4" /> Preview &amp; Test
                 </button>
               </div>
             </div>
@@ -3500,6 +3676,370 @@ const GrizzlyMappingTool = () => {
 
 
 
+      {step === 2.5 && (
+        <div className="max-w-5xl mx-auto p-6">
+          <div className="flex items-center justify-between mb-5">
+            <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+              <Eye className="w-5 h-5 text-slate-500" /> Preview &amp; Test
+            </h1>
+            <div className="flex gap-2">
+              <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-sm text-slate-600 hover:bg-slate-50">
+                <ArrowLeft className="w-4 h-4" /> Back to mapping
+              </button>
+              <button onClick={() => setStep(3)} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
+                <Layers className="w-4 h-4" /> Review &amp; Export
+              </button>
+            </div>
+          </div>
+
+          {/* ── TOP: Preview panel ─────────────────────────────────────────── */}
+          <div className="bg-white border border-slate-200 rounded-xl mb-6 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-slate-50">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="w-4 h-4 text-slate-500" />
+                <span className="font-semibold text-slate-700 text-sm">Preview transform</span>
+                <span className="text-xs text-slate-400 ml-1">— calls <code className="bg-slate-100 px-1 rounded text-xs">POST /api/grizzly/preview</code></span>
+              </div>
+              <div className="flex items-center gap-2">
+                {previewRanOk && !previewError && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" /> Preview OK
+                  </span>
+                )}
+                {previewError && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Error</span>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 divide-x divide-slate-200">
+              {/* Input pane */}
+              <div className="p-4">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Sample input (JSON)</p>
+                <textarea
+                  value={previewInput}
+                  onChange={e => { setPreviewInput(e.target.value); setPreviewRanOk(false); }}
+                  className="w-full h-44 font-mono text-xs p-3 border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:border-slate-400 resize-none"
+                  spellCheck={false}
+                />
+              </div>
+              {/* Output pane */}
+              <div className="p-4">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Transformed output</p>
+                <div className={`w-full h-44 font-mono text-xs p-3 rounded-lg overflow-auto border
+                  ${previewError ? 'border-red-200 bg-red-50 text-red-700'
+                    : previewOutput ? 'border-emerald-200 bg-emerald-50 text-slate-800'
+                    : 'border-slate-200 bg-slate-50 text-slate-400 italic'}`}>
+                  {previewRunning ? 'Running...'
+                    : previewError ? previewError
+                    : previewOutput ? previewOutput
+                    : 'Run preview to see output here...'}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={runPreview}
+                  disabled={previewRunning}
+                  className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm disabled:opacity-50"
+                >
+                  <Play className="w-4 h-4" />
+                  {previewRunning ? 'Running...' : 'Run preview'}
+                </button>
+                <span className="text-xs text-slate-400">Preview never saves — safe to experiment.</span>
+              </div>
+              {/* Save gate */}
+              <div className="flex items-center gap-3">
+                {gdSaveStatus === 'saved' && (
+                  <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Saved to config DB</span>
+                )}
+                {gdSaveStatus === 'blocked' && (
+                  <span className="text-xs text-red-600">Regression failed — not saved</span>
+                )}
+                <button
+                  onClick={validateAndSave}
+                  disabled={!previewRanOk || gdSaving}
+                  title={!previewRanOk ? 'Run preview first' : 'Runs golden dataset regression then saves'}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 text-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-emerald-700"
+                >
+                  <Save className="w-4 h-4" />
+                  {gdSaving ? 'Validating...' : 'Validate &amp; Save →'}
+                </button>
+              </div>
+            </div>
+
+            {/* Regression failures inline under save */}
+            {gdSaveStatus === 'blocked' && gdSaveFailures.length > 0 && (
+              <div className="border-t border-red-200 bg-red-50 px-4 py-3">
+                <p className="text-xs font-semibold text-red-700 mb-2">Regression failures — fix mapping before saving:</p>
+                <div className="space-y-1">
+                  {gdSaveFailures.map((f, i) => (
+                    <div key={i} className="text-xs font-mono bg-white border border-red-100 rounded px-3 py-2">
+                      <span className="text-red-600 font-semibold">{f.testName}</span>
+                      {f.expected && <span className="ml-2 text-slate-500">expected: <span className="text-slate-700">{JSON.stringify(f.expected)}</span></span>}
+                      {f.actual   && <span className="ml-2 text-slate-500">got: <span className="text-red-600">{JSON.stringify(f.actual)}</span></span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── BOTTOM: Golden Dataset panel ──────────────────────────────── */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-slate-50">
+              <div className="flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-slate-500" />
+                <span className="font-semibold text-slate-700 text-sm">Golden dataset</span>
+                <span className="text-xs text-slate-400 ml-1">— regression test cases (in-memory store)</span>
+              </div>
+              {/* Sub-tabs */}
+              <div className="flex gap-1 bg-slate-100 rounded-lg p-1">
+                {[
+                  { key: 'list', label: 'Test cases' },
+                  { key: 'add',  label: '+ Add case' },
+                  { key: 'run',  label: 'Run regression' },
+                ].map(t => (
+                  <button
+                    key={t.key}
+                    onClick={() => { setGdTab(t.key); if (t.key === 'list') loadGdCases(); }}
+                    className={`px-3 py-1 rounded text-xs font-medium transition-colors
+                      ${gdTab === t.key ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* ── LIST tab ── */}
+            {gdTab === 'list' && (
+              <div className="p-4">
+                {/* Filters */}
+                <div className="flex gap-2 mb-3 flex-wrap">
+                  <input
+                    value={gdFilterName}
+                    onChange={e => setGdFilterName(e.target.value)}
+                    placeholder="Search test name..."
+                    className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 w-44"
+                  />
+                  <select
+                    value={gdFilterSvc}
+                    onChange={e => { setGdFilterSvc(e.target.value); loadGdCases(e.target.value, gdFilterStatus); }}
+                    className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none bg-white">
+                    <option value="">All services</option>
+                    <option value="order-service">order-service</option>
+                    <option value="mismo-service">mismo-service</option>
+                    <option value="payment-service">payment-service</option>
+                    <option value="default">default</option>
+                  </select>
+                  <select
+                    value={gdFilterStatus}
+                    onChange={e => { setGdFilterStatus(e.target.value); loadGdCases(gdFilterSvc, e.target.value); }}
+                    className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none bg-white">
+                    <option value="">All status</option>
+                    <option value="PASS">Pass</option>
+                    <option value="FAIL">Fail</option>
+                    <option value="PENDING">Pending</option>
+                  </select>
+                  <button onClick={() => loadGdCases()}
+                    className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600">
+                    Refresh
+                  </button>
+                </div>
+
+                {gdLoading ? (
+                  <p className="text-xs text-slate-400 py-6 text-center">Loading...</p>
+                ) : gdCases.length === 0 ? (
+                  <div className="text-center py-10 text-slate-400">
+                    <BookOpen className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                    <p className="text-sm">No test cases yet.</p>
+                    <p className="text-xs mt-1">Add cases via the <span className="font-medium">+ Add case</span> tab, or push from your microservices.</p>
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded-lg overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200">
+                        <tr>
+                          <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Service</th>
+                          <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Mapping family</th>
+                          <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Test name</th>
+                          <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Status</th>
+                          <th className="px-3 py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {gdCases
+                          .filter(c =>
+                            (!gdFilterSvc    || c.service === gdFilterSvc) &&
+                            (!gdFilterStatus || c.lastRunStatus === gdFilterStatus) &&
+                            (!gdFilterName   || c.testName.toLowerCase().includes(gdFilterName.toLowerCase()))
+                          )
+                          .map(c => (
+                            <tr key={c.id} className="hover:bg-slate-50">
+                              <td className="px-3 py-2 font-mono text-slate-500">{c.service}</td>
+                              <td className="px-3 py-2 font-mono text-slate-600">{c.mappingFamily}</td>
+                              <td className="px-3 py-2 font-mono text-slate-800">{c.testName}</td>
+                              <td className="px-3 py-2">
+                                {c.lastRunStatus === 'PASS'
+                                  ? <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-medium">PASS</span>
+                                  : c.lastRunStatus === 'FAIL'
+                                  ? <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200 text-[10px] font-medium">FAIL</span>
+                                  : <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium">PENDING</span>}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <button onClick={() => deleteGdCase(c.id)}
+                                  className="p-1 text-slate-300 hover:text-red-500 transition-colors" title="Soft delete">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── ADD tab ── */}
+            {gdTab === 'add' && (
+              <div className="p-4">
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Service</label>
+                    <input value={newCaseSvc} onChange={e => setNewCaseSvc(e.target.value)}
+                      placeholder="e.g. order-service"
+                      className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Mapping family</label>
+                    <input value={newCaseFamily} onChange={e => setNewCaseFamily(e.target.value)}
+                      placeholder={mappingFamily}
+                      className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
+                  </div>
+                </div>
+                <div className="mb-3">
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Test name</label>
+                  <input value={newCaseName} onChange={e => setNewCaseName(e.target.value)}
+                    placeholder="e.g. null-field-handling"
+                    className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400" />
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Input JSON</label>
+                    <textarea value={newCaseInput} onChange={e => setNewCaseInput(e.target.value)}
+                      placeholder={'{\n  "key": "value"\n}'}
+                      className="w-full h-32 font-mono text-xs p-3 border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:border-slate-400 resize-none"
+                      spellCheck={false} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Expected output JSON</label>
+                    <textarea value={newCaseExpected} onChange={e => setNewCaseExpected(e.target.value)}
+                      placeholder={'{\n  "outputKey": "outputValue"\n}'}
+                      className="w-full h-32 font-mono text-xs p-3 border border-slate-200 rounded-lg bg-slate-50 focus:outline-none focus:border-slate-400 resize-none"
+                      spellCheck={false} />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button onClick={addGdCase}
+                    className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-2">
+                    <Save className="w-4 h-4" /> Save test case
+                  </button>
+                  <button onClick={() => { setGdTab('list'); loadGdCases(); }}
+                    className="px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50">
+                    Cancel
+                  </button>
+                  {newCaseMsg && (
+                    <span className={`text-xs ${newCaseMsg.ok ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {newCaseMsg.text}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── RUN tab ── */}
+            {gdTab === 'run' && (
+              <div className="p-4">
+                <p className="text-xs text-slate-500 mb-3">Runs all active test cases for a mapping family — calls <code className="bg-slate-100 px-1 rounded">POST /api/grizzly/test-cases/run-all</code></p>
+                <div className="flex items-center gap-3 mb-4">
+                  <input value={gdRunFamily} onChange={e => setGdRunFamily(e.target.value)}
+                    placeholder={`Mapping family (default: ${mappingFamily})`}
+                    className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-slate-400 w-64" />
+                  <button onClick={runGdRegression} disabled={gdRunning}
+                    className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-2 disabled:opacity-50">
+                    <Play className="w-4 h-4" />
+                    {gdRunning ? 'Running...' : 'Run regression'}
+                  </button>
+                </div>
+
+                {gdRunResults && (
+                  <div>
+                    {gdRunResults.error ? (
+                      <p className="text-xs text-red-600">Error: {gdRunResults.error}</p>
+                    ) : (
+                      <>
+                        <div className="border border-slate-200 rounded-lg overflow-hidden mb-2">
+                          <table className="w-full text-xs">
+                            <thead className="bg-slate-50 border-b border-slate-200">
+                              <tr>
+                                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Service</th>
+                                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Test name</th>
+                                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Result</th>
+                                <th className="text-left px-3 py-2 font-semibold text-slate-500 uppercase tracking-wide text-[10px]">Diff</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {(gdRunResults.results || []).map((r, i) => (
+                                <tr key={i} className={r.status === 'PASS' ? 'bg-emerald-50' : 'bg-red-50'}>
+                                  <td className="px-3 py-2 font-mono text-slate-500">{r.service}</td>
+                                  <td className="px-3 py-2 font-mono text-slate-800">{r.testName}</td>
+                                  <td className="px-3 py-2">
+                                    {r.status === 'PASS'
+                                      ? <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-semibold">PASS</span>
+                                      : <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-[10px] font-semibold">FAIL</span>}
+                                  </td>
+                                  <td className="px-3 py-2 font-mono text-[10px]">
+                                    {r.status === 'FAIL' && r.diff && Object.keys(r.diff).length > 0 && (
+                                      <div className="space-y-0.5">
+                                        {Object.entries(r.diff).map(([field, delta]) => (
+                                          <div key={field}>
+                                            <span className="text-slate-400">{field}: </span>
+                                            <span className="text-red-500">{JSON.stringify(delta.expected)}</span>
+                                            <span className="mx-1 text-slate-400">→</span>
+                                            <span className="text-emerald-600">{JSON.stringify(delta.actual)}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    {r.status === 'FAIL' && r.error && (
+                                      <span className="text-red-500">{r.error}</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          {gdRunResults.total} tests · <span className="text-emerald-600">{gdRunResults.passed} passed</span> · <span className="text-red-500">{gdRunResults.failed} failed</span>
+                          {gdRunResults.durationMs && <span className="ml-2">· {gdRunResults.durationMs}ms</span>}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+
       {step === 3 && (
         <div className="max-w-4xl mx-auto p-6">
           <h1 className="text-xl font-bold text-slate-800 mb-4">Step 3: Export</h1>
@@ -3507,7 +4047,7 @@ const GrizzlyMappingTool = () => {
             <PrismCode code={generateCode()} language="python" />
           </div>
           <div className="flex gap-4">
-            <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
+            <button onClick={() => { expandBothTrees(); setStep(2.5); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700">
               <ArrowLeft className="w-4 h-4" /> Back to mapping
             </button>
             <button

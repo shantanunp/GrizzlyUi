@@ -94,5 +94,18 @@ export default defineConfig(({ mode }) => {
   const env = { ...process.env, ...loadEnv(mode, process.cwd(), '') }
   return {
     plugins: [react(), tailwindcss(), aiProxyPlugin(env)],
+    server: {
+      port: 5173,
+      proxy: {
+        // Any request from the UI starting with /api/grizzly is forwarded
+        // to the Spring Boot backend. No CORS headers needed on the backend
+        // when using the proxy — the browser never sees a cross-origin request.
+        '/api/grizzly': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
+    },
   }
 })
