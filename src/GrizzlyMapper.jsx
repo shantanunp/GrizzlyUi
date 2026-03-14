@@ -20,7 +20,7 @@ import { Highlight, themes as prismThemes } from 'prism-react-renderer';
 // <Highlight theme={prismThemes.vsLight} ...>      // VS Code light
 // <Highlight theme={prismThemes.nightOwlLight} ... // Night Owl light variant
 // <Highlight theme={prismThemes.duotoneLight} ...> // Minimal duotone
-const PrismCode = ({ code, language = 'python' }) => (
+const PrismCode = ({ code, language = 'python', wrap = false }) => (
   <Highlight theme={prismThemes.github} code={(code || '').trimEnd()} language={language}>
     {({ className, style, tokens, getLineProps, getTokenProps }) => (
       <pre
@@ -31,7 +31,9 @@ const PrismCode = ({ code, language = 'python' }) => (
           padding: '12px 16px',
           fontSize: '12px',
           lineHeight: '1.6',
-          overflowX: 'auto',
+          overflowX: wrap ? 'visible' : 'auto',
+          whiteSpace: wrap ? 'pre-wrap' : 'pre',
+          wordBreak: wrap ? 'break-word' : 'normal',
           borderRadius: '0',
           border: 'none',
         }}
@@ -509,6 +511,7 @@ const GrizzlyMappingTool = () => {
   const [activeModule, setActiveModule] = useState(0);
   const [renamingModuleIdx, setRenamingModuleIdx] = useState(null);
   const [renameValue, setRenameValue] = useState('');
+  const [codeWrap, setCodeWrap] = useState(true);
 
   // ── Registered Functions ─────────────────────────────────────────────────
   const BUILTIN_REG_FUNCTIONS = [
@@ -4090,19 +4093,25 @@ const GrizzlyMappingTool = () => {
 
       {step === 3 && (
         <div className="pl-8 pr-6 py-6 pb-12 min-h-screen">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <h1 className="text-xl font-bold text-slate-800">Generated template</h1>
-            <div className="flex gap-2">
-              <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700 hover:bg-slate-50">
-                <ArrowLeft className="w-4 h-4" /> Back to mapping
-              </button>
-              <button onClick={() => { loadGdCases(); setStep(4); }} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
-                <Eye className="w-4 h-4" /> Preview &amp; Test
-              </button>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+                <input type="checkbox" checked={codeWrap} onChange={e => setCodeWrap(e.target.checked)} className="rounded border-slate-300" />
+                Word wrap
+              </label>
+              <div className="flex gap-2">
+                <button onClick={() => { expandBothTrees(); setStep(2); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-slate-700 hover:bg-slate-50">
+                  <ArrowLeft className="w-4 h-4" /> Back to mapping
+                </button>
+                <button onClick={() => { loadGdCases(); setStep(4); }} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
+                  <Eye className="w-4 h-4" /> Preview &amp; Test
+                </button>
+              </div>
             </div>
           </div>
           <div className="bg-white">
-            <PrismCode code={generateCode()} language="python" />
+            <PrismCode code={generateCode()} language="python" wrap={codeWrap} />
           </div>
         </div>
       )}
