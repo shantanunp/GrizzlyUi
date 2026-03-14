@@ -3248,6 +3248,39 @@ const GrizzlyMappingTool = () => {
     setGdRunning(false);
   };
 
+  // Publish: run all golden dataset tests, then save only if all pass
+  const handlePublish = async () => {
+    setGdSaving(true);
+    setGdSaveStatus(null);
+    setGdSaveFailures([]);
+    setGdRunResults(null);
+    try {
+      const res = await fetch(`${GRIZZLY_API}/test-cases/run-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mappingFamily }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGdRunResults(data);
+      if (data.error || (data.failed !== undefined && data.failed > 0)) {
+        setGdSaveStatus('blocked');
+        setGdSaveFailures((data.results || []).filter(r => r.status === 'FAIL').map(r => ({
+          testName: r.testName,
+          expected: r.diff ? Object.fromEntries(Object.entries(r.diff).map(([k, v]) => [k, v.expected])) : null,
+          actual: r.diff ? Object.fromEntries(Object.entries(r.diff).map(([k, v]) => [k, v.actual])) : r.error || null,
+        })));
+        setGdSaving(false);
+        return;
+      }
+      await validateAndSave();
+    } catch (e) {
+      setGdSaveStatus('blocked');
+      setGdSaveFailures([{ testName: 'error', error: e.message }]);
+    }
+    setGdSaving(false);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200 px-4 py-3 flex justify-between items-center sticky top-0 z-10">
@@ -3689,20 +3722,20 @@ const GrizzlyMappingTool = () => {
         <div className="max-w-5xl mx-auto p-6">
           <div className="flex items-center justify-between mb-5">
             <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-              <Eye className="w-5 h-5 text-slate-500" /> Preview &amp; Test
+              <Eye className="w-5 h-5 text-slate-500" /> Publish Template
             </h1>
             <div className="flex gap-2">
               <button onClick={() => { setStep(3); loadGdCases(); }} className="px-4 py-2 border border-slate-300 rounded-lg flex items-center gap-2 text-sm text-slate-600 hover:bg-slate-50">
                 <ArrowLeft className="w-4 h-4" /> Back to code
               </button>
               <button
-                onClick={validateAndSave}
-                disabled={!previewRanOk || gdSaving}
-                title={!previewRanOk ? 'Run preview first' : 'Runs golden dataset regression then saves'}
-                className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 text-sm disabled:opacity-30 disabled:cursor-not-allowed hover:bg-emerald-700"
+                onClick={handlePublish}
+                disabled={gdSaving}
+                title="Runs all golden dataset tests, then publishes only if all pass"
+                className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-800"
               >
-                <Save className="w-4 h-4" />
-                {gdSaving ? 'Validating...' : 'Validate & Save'}
+                <Upload className="w-4 h-4" />
+                {gdSaving ? 'Running tests...' : 'Publish'}
               </button>
             </div>
           </div>
@@ -4105,7 +4138,7 @@ const GrizzlyMappingTool = () => {
                   <ArrowLeft className="w-4 h-4" /> Back to mapping
                 </button>
                 <button onClick={() => { loadGdCases(); setStep(4); }} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm">
-                  <Eye className="w-4 h-4" /> Preview &amp; Test
+                  <Eye className="w-4 h-4" /> Publish Template
                 </button>
               </div>
             </div>
