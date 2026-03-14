@@ -2535,10 +2535,9 @@ const GrizzlyMappingTool = () => {
     };
 
     // Build list comprehension lines for a for-block.
-    // _forMeta = { iterator, iterable, children }  where children are assignment items.
-    const buildListComp = ({ iterator, iterable, children }) => {
-      // Collect inner assignments and render the dict body
-      const innerAssignments = collectForChildren(children, iterator, iterable);
+    // _forMeta = { iterator, iterable, children, isFromListComp? }  where children are assignment items.
+    const buildListComp = ({ iterator, iterable, children, isFromListComp = false }) => {
+      const innerAssignments = collectForChildren(children, iterator, iterable, isFromListComp);
       const innerStructure = buildInnerDict(innerAssignments);
       const dictLines = generateDict(innerStructure, 3); // deep indent for the comp body
 
@@ -2558,14 +2557,15 @@ const GrizzlyMappingTool = () => {
 
     // Collect assignments from for-loop children and convert paths using iterator var.
     // Supports plain assignments AND LC-IF ternary blocks.
-    const collectForChildren = (children, iterator, iterable) => {
+    // When isFromListComp: lcChildren targets (e.g. subjectProperty.address.x) are already relative.
+    // When not: old-style FOR children may have rootKey prefix to strip.
+    const collectForChildren = (children, iterator, iterable, isFromListComp = false) => {
       const results = [];
       (children || []).forEach(item => {
         if (item.type === 'assignment' && item.target) {
-          // Plain assignment inside list comp — path has rootKey prefix, needs stripping
           const cleaned = cleanPath(item.target);
           const expr = rewriteForExpr(cleanExpr(item.expression || '""'), iterator, iterable);
-          results.push({ cleanedTarget: cleaned, expression: expr, isRelative: false });
+          results.push({ cleanedTarget: cleaned, expression: expr, isRelative: isFromListComp });
         } else if (item.type === 'if' && item.lcTarget) {
           const cleaned = item.lcTarget.trim();
           const cond = rewriteForExpr(cleanExpr(item.condition || 'False'), iterator, iterable);
@@ -2857,7 +2857,7 @@ const GrizzlyMappingTool = () => {
               safeIterable = `(${iterVarName} or [])`;
             }
 
-            const innerAssignments = collectForChildren(assignments[0]._forMeta.children, iterator, iterable);
+            const innerAssignments = collectForChildren(assignments[0]._forMeta.children, iterator, iterable, isFromListComp);
             const innerStructure = buildInnerDict(innerAssignments);
 
             // Render the inner item dict with proper indentation.
