@@ -3231,7 +3231,7 @@ const GrizzlyMappingTool = () => {
       const res = await fetch(`${GRIZZLY_API}/validate-and-save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mappingFamily, generatedCode: generateCode() }),
+        body: JSON.stringify({ mappingFamily, generatedCode: generateCode(), stagingPath: GRIZZLY_STAGING_PATH }),
       });
       const data = await res.json();
       if (res.ok && data.saved) {
